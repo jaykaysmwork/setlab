@@ -1,0 +1,8 @@
+httpx>=0.27.0
+pydantic>=2.5.0
+aiohttp>=3.9.0
+google-genai>=1.0.0
+lumaapi>=0.0.4
+Pillow>=10.0.0
+json-repair>=0.44.0
+# tripo3d>=0.3.12  # legacy — mesh gen uses rodin_client (Hyper3D Rodin Gen-2)
