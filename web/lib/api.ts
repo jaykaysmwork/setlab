@@ -1,4 +1,13 @@
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+/** API origin (no trailing slash). Browser: uses NEXT_PUBLIC_API_URL or origin+basePath. SSR/build: localhost default. */
+export function apiBase(): string {
+  const fromEnv = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (fromEnv) return fromEnv.replace(/\/$/, "");
+  if (typeof window !== "undefined") {
+    const bp = (process.env.NEXT_PUBLIC_BASE_PATH || "").trim();
+    return `${window.location.origin}${bp}`;
+  }
+  return "http://localhost:8000";
+}
 
 export interface ModulePlacement {
   id: string;
@@ -68,7 +77,7 @@ export async function enhancePrompt(
   prompt: string,
   model = "claude-sonnet-4-6",
 ): Promise<{ enhanced: string }> {
-  const res = await fetch(`${API}/api/enhance-prompt`, {
+  const res = await fetch(`${apiBase()}/api/enhance-prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt, model }),
@@ -95,7 +104,7 @@ export async function generate(
   ) {
     body.max_modules = Math.floor(maxModules);
   }
-  const res = await fetch(`${API}/api/generate`, {
+  const res = await fetch(`${apiBase()}/api/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -128,7 +137,7 @@ export async function deploy(
     body.building_glb_extra_deg = rotation.buildingGlbExtraDeg;
     body.per_module_glb_extra_deg = rotation.perModuleGlbExtraDeg;
   }
-  const res = await fetch(`${API}/api/deploy/${runId}${params}`, {
+  const res = await fetch(`${apiBase()}/api/deploy/${runId}${params}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -141,21 +150,21 @@ export async function deploy(
 }
 
 export async function fetchHistory(): Promise<HistoryItem[]> {
-  const res = await fetch(`${API}/api/history`);
+  const res = await fetch(`${apiBase()}/api/history`);
   if (!res.ok) return [];
   const data = await res.json();
   return data.items ?? [];
 }
 
 export async function fetchConfig(): Promise<AppConfig> {
-  const res = await fetch(`${API}/api/config`);
+  const res = await fetch(`${apiBase()}/api/config`);
   return res.json();
 }
 
 export async function updateConfig(
   ueProject: string
 ): Promise<{ ue_project: string }> {
-  const res = await fetch(`${API}/api/config`, {
+  const res = await fetch(`${apiBase()}/api/config`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ue_project: ueProject }),
@@ -173,7 +182,7 @@ export async function refine(
   backend = "claude",
   model = "claude-sonnet-4-6"
 ): Promise<GenerateResult> {
-  const res = await fetch(`${API}/api/refine`, {
+  const res = await fetch(`${apiBase()}/api/refine`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ run_id: runId, instruction, backend, model }),
@@ -192,7 +201,7 @@ export async function refineModule(
   backend = "claude",
   model = "claude-sonnet-4-6",
 ): Promise<GenerateResult> {
-  const res = await fetch(`${API}/api/refine-module`, {
+  const res = await fetch(`${apiBase()}/api/refine-module`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -211,7 +220,7 @@ export async function refineModule(
 }
 
 export function gltfUrl(path: string): string {
-  return `${API}${path}`;
+  return `${apiBase()}${path}`;
 }
 
 export async function startMeshGen(
@@ -222,7 +231,7 @@ export async function startMeshGen(
     opts?.moduleIds && opts.moduleIds.length > 0
       ? { module_ids: opts.moduleIds }
       : {};
-  const res = await fetch(`${API}/api/meshgen/${runId}`, {
+  const res = await fetch(`${apiBase()}/api/meshgen/${runId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -235,7 +244,7 @@ export async function startMeshGen(
 }
 
 export async function pollMeshStatus(runId: string): Promise<MeshGenStatus> {
-  const res = await fetch(`${API}/api/meshgen/${runId}/status`);
+  const res = await fetch(`${apiBase()}/api/meshgen/${runId}/status`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Failed to poll mesh status");
@@ -257,7 +266,7 @@ export interface HdGenStatus {
 }
 
 export async function startHdGen(runId: string): Promise<HdGenStatus> {
-  const res = await fetch(`${API}/api/hdgen/${runId}`, { method: "POST" });
+  const res = await fetch(`${apiBase()}/api/hdgen/${runId}`, { method: "POST" });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "HD generation failed to start");
@@ -266,7 +275,7 @@ export async function startHdGen(runId: string): Promise<HdGenStatus> {
 }
 
 export async function pollHdStatus(runId: string): Promise<HdGenStatus> {
-  const res = await fetch(`${API}/api/hdgen/${runId}/status`);
+  const res = await fetch(`${apiBase()}/api/hdgen/${runId}/status`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Failed to poll HD status");
@@ -287,7 +296,7 @@ export interface EnvGenStatus {
 }
 
 export async function startEnvGen(runId: string): Promise<EnvGenStatus> {
-  const res = await fetch(`${API}/api/envgen/${runId}`, { method: "POST" });
+  const res = await fetch(`${apiBase()}/api/envgen/${runId}`, { method: "POST" });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Marble environment generation failed to start");
@@ -296,7 +305,7 @@ export async function startEnvGen(runId: string): Promise<EnvGenStatus> {
 }
 
 export async function pollEnvGenStatus(runId: string): Promise<EnvGenStatus> {
-  const res = await fetch(`${API}/api/envgen/${runId}/status`);
+  const res = await fetch(`${apiBase()}/api/envgen/${runId}/status`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Failed to poll envgen status");
@@ -310,7 +319,7 @@ export async function copyMeshGlb(
   fromModuleId: string,
   toModuleId: string,
 ): Promise<{ ok: boolean; run_id: string; from_module_id: string; to_module_id: string }> {
-  const res = await fetch(`${API}/api/copy-mesh-glb/${runId}`, {
+  const res = await fetch(`${apiBase()}/api/copy-mesh-glb/${runId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -326,7 +335,7 @@ export async function copyMeshGlb(
 }
 
 export async function orientBuildingsToRoad(runId: string): Promise<GenerateResult> {
-  const res = await fetch(`${API}/api/orient-buildings/${runId}`, { method: "POST" });
+  const res = await fetch(`${apiBase()}/api/orient-buildings/${runId}`, { method: "POST" });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Orient buildings failed");
@@ -353,7 +362,7 @@ export async function startMaterialEnhance(
   const body: Record<string, unknown> = {};
   if (opts?.style) body.style = opts.style;
   if (opts?.customPrompt) body.custom_prompt = opts.customPrompt;
-  const res = await fetch(`${API}/api/material-enhance/${runId}`, {
+  const res = await fetch(`${apiBase()}/api/material-enhance/${runId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -368,7 +377,7 @@ export async function startMaterialEnhance(
 export async function pollMaterialEnhanceStatus(
   runId: string,
 ): Promise<MaterialEnhanceStatus> {
-  const res = await fetch(`${API}/api/material-enhance/${runId}/status`);
+  const res = await fetch(`${apiBase()}/api/material-enhance/${runId}/status`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Failed to poll material enhancement status");
@@ -391,7 +400,7 @@ export async function sendModification(
   runId: string,
   instruction: string,
 ): Promise<ModifyResult> {
-  const res = await fetch(`${API}/api/modify/${runId}`, {
+  const res = await fetch(`${apiBase()}/api/modify/${runId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ instruction }),
@@ -411,7 +420,7 @@ export async function saveViewerEdits(
   const body: Record<string, unknown> = {
     per_module_glb_extra_deg: perModuleGlbExtraDeg,
   };
-  const res = await fetch(`${API}/api/save-edits/${runId}`, {
+  const res = await fetch(`${apiBase()}/api/save-edits/${runId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

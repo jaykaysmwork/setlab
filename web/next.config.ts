@@ -7,6 +7,17 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.join(here, "..");
 loadEnvConfig(repoRoot);
 
-const nextConfig: NextConfig = {};
+const isStaticExport = process.env.SETLAB_STATIC_EXPORT === "1";
+const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || "").trim();
+
+const nextConfig: NextConfig = {
+  ...(basePath ? { basePath } : {}),
+  ...(isStaticExport
+    ? {
+        output: "export" as const,
+        images: { unoptimized: true },
+      }
+    : {}),
+};
 
 export default nextConfig;

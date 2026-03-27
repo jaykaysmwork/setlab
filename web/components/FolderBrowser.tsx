@@ -2,8 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { apiBase } from "@/lib/api";
 
 interface Entry {
   name: string;
@@ -31,7 +30,7 @@ export default function FolderBrowser({ initialPath, onSelect, onClose }: Props)
   const browse = useCallback(async (path: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/browse?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`${apiBase()}/api/browse?path=${encodeURIComponent(path)}`);
       if (res.ok) {
         setResult(await res.json());
       }

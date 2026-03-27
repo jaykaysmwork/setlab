@@ -2,5 +2,7 @@
 __pycache__/
 *.pyc
 out/
+web/out/
+web/.next/
 .env
 .DS_Store
