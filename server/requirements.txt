@@ -1,5 +1,10 @@
+# Supplements the root requirements.txt — install BOTH:
+#   pip install -r requirements.txt && pip install -r server/requirements.txt
+# Server endpoints import setlab modules that need Pillow / json-repair /
+# google-genai / ddgs, which live only in the root requirements.txt.
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-dotenv>=1.0.0
+anthropic>=0.40.0
 httpx>=0.27.0
 pydantic>=2.5.0

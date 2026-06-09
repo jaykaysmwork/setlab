@@ -112,13 +112,10 @@ setlab/
 │   ├── layout_orient.py         # 건물 방향 자동 보정
 │   ├── glb_rotation_bake.py     # GLB 회전값 베이킹
 │   ├── run.py                   # CLI 파이프라인 러너
-│   ├── mesh_client.py           # (레거시) Tripo text→3D
-│   ├── hd_mesh_client.py        # (레거시) Tripo multiview→3D
 │   └── mock_backend.py          # 테스트용 목 백엔드
 │
 ├── scripts/
 │   ├── ue_set_watcher.py        # UE5 Python — 자동 임포트/배치/조명/수정 워처
-│   ├── unreal_spawn_from_spec.py# UE5 스펙 기반 스폰 (단독 실행)
 │   ├── ue_auto_reimport.py      # UE5 자동 리임포트
 │   ├── blender_import_set.py    # Blender 임포트 스크립트
 │   ├── prompt_to_viewport.sh    # CLI 파이프라인 (프롬프트→뷰포트)

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from typing import Any, Dict, List, Optional
 
 import anthropic
 
 from setlab.llm_json import parse_llm_json_object
+from setlab.model_ids import CLAUDE_HAIKU, CLAUDE_SONNET
 from setlab.prompts import layout_system_prompt, user_message
 
 REFINE_SYSTEM = """You are a 3D set layout engine. You will receive an existing JSON layout and an instruction to modify it.
@@ -64,13 +66,27 @@ The user may write instructions in any language (Korean, English, etc.).
 """
 
 
+_clients: Dict[float, anthropic.Anthropic] = {}
+_client_lock = threading.Lock()
+
+
 def _get_client(timeout: float = 120.0) -> anthropic.Anthropic:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError(
             "ANTHROPIC_API_KEY not set. Get one at https://console.anthropic.com/settings/keys"
         )
-    return anthropic.Anthropic(api_key=api_key, timeout=timeout)
+    # Pool one client per distinct timeout (only a couple of values are used) so we
+    # reuse the underlying httpx connection pool instead of constructing a new
+    # client on every call. Thread-safe via double-checked locking.
+    client = _clients.get(timeout)
+    if client is None:
+        with _client_lock:
+            client = _clients.get(timeout)
+            if client is None:
+                client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
+                _clients[timeout] = client
+    return client
 
 
 def _parse(text: str) -> Dict[str, Any]:
@@ -80,7 +96,7 @@ def _parse(text: str) -> Dict[str, Any]:
 def generate_raw(
     brief: str,
     *,
-    model: str = "claude-sonnet-4-6",
+    model: str = CLAUDE_SONNET,
     timeout: float = 120.0,
     max_modules: Optional[int] = None,
 ) -> Dict[str, Any]:
@@ -104,7 +120,7 @@ def refine_raw(
     existing_spec: Dict[str, Any],
     instruction: str,
     *,
-    model: str = "claude-sonnet-4-6",
+    model: str = CLAUDE_SONNET,
     timeout: float = 120.0,
 ) -> Dict[str, Any]:
     client = _get_client(timeout)
@@ -157,7 +173,7 @@ def refine_single_module_raw(
     era_style: str = "",
     instruction: str,
     reference_modules: Optional[List[Dict[str, Any]]] = None,
-    model: str = "claude-sonnet-4-6",
+    model: str = CLAUDE_SONNET,
     timeout: float = 120.0,
 ) -> Dict[str, Any]:
     """Return updated single module dict; id must match input.
@@ -273,7 +289,7 @@ def _build_image_content(image_paths: list) -> list:
 def enhance_prompt_stream(
     brief: str,
     *,
-    model: str = "claude-haiku-4-5-20251001",
+    model: str = CLAUDE_HAIKU,
     timeout: float = 60.0,
     reference_images: list | None = None,
 ):
@@ -300,7 +316,7 @@ def enhance_prompt_stream(
                     "Do not invent details not visible in the images."
                 ),
             }]
-            use_model = "claude-sonnet-4-6"  # vision requires a capable model
+            use_model = CLAUDE_SONNET  # vision requires a capable model
             with client.messages.stream(
                 model=use_model,
                 max_tokens=800,
@@ -324,7 +340,7 @@ def enhance_prompt_stream(
 def enhance_prompt_raw(
     brief: str,
     *,
-    model: str = "claude-haiku-4-5-20251001",
+    model: str = CLAUDE_HAIKU,
     timeout: float = 60.0,
 ) -> str:
     """Return an expanded English scene brief for the layout generator."""

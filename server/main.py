@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, str(ROOT))
 
 from setlab.run import generate_set  # noqa: E402
+from setlab.model_ids import CLAUDE_SONNET  # noqa: E402
 
 app = FastAPI(title="SetLab API")
 
@@ -68,7 +69,7 @@ def health():
 class GenerateRequest(BaseModel):
     prompt: str
     backend: str = "mock"
-    model: str = "claude-sonnet-4-6"
+    model: str = CLAUDE_SONNET
     max_modules: Optional[int] = Field(
         default=None,
         ge=1,
@@ -81,7 +82,7 @@ class EnhancePromptRequest(BaseModel):
     """Expand a short user idea into a detailed English scene brief (Claude)."""
 
     prompt: str
-    model: str = "claude-sonnet-4-6"
+    model: str = CLAUDE_SONNET
     reference_image_paths: Optional[List[str]] = None
 
 
@@ -104,7 +105,7 @@ class RefineRequest(BaseModel):
     run_id: str
     instruction: str
     backend: str = "claude"
-    model: str = "claude-sonnet-4-6"
+    model: str = CLAUDE_SONNET
 
 
 class RefineModuleRequest(BaseModel):
@@ -114,7 +115,7 @@ class RefineModuleRequest(BaseModel):
     module_id: str
     instruction: str
     backend: str = "claude"
-    model: str = "claude-sonnet-4-6"
+    model: str = CLAUDE_SONNET
 
 
 class SaveViewerEditsRequest(BaseModel):
@@ -297,7 +298,6 @@ def api_refine(req: RefineRequest):
 
     from setlab.models import SetSpec
     from setlab.run import _fix_positions
-    from setlab.layout_orient import orient_buildings_toward_floors
     from setlab.export_gltf import spec_to_gltf_dict
     from setlab.export_usda import spec_to_usda
 
@@ -651,9 +651,6 @@ def api_deploy(run_id: str, vr: bool = False, req: Optional[DeployRequest] = Non
     else:
         shutil.copy2(gltf, dest / "set.gltf")
 
-    for bin_file in src_dir.glob("*.bin"):
-        shutil.copy2(bin_file, dest / bin_file.name)
-
     meshes_copied = 0
     meshes_src = src_dir / "meshes"
     if meshes_src.is_dir():
@@ -719,7 +716,7 @@ def api_config():
     return {
         "ue_project": os.environ.get("UE_PROJECT", ""),
         "ollama_host": os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"),
-        "default_model": os.environ.get("MODEL", "claude-sonnet-4-6"),
+        "default_model": os.environ.get("MODEL", CLAUDE_SONNET),
         "default_backend": os.environ.get("BACKEND", "claude"),
     }
 
@@ -1261,7 +1258,7 @@ def api_material_enhance_status(run_id: str):
 
 class ModifyRequest(BaseModel):
     instruction: str
-    model: str = "claude-sonnet-4-6"
+    model: str = CLAUDE_SONNET
 
 
 @app.post("/api/modify/{run_id}")

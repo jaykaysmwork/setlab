@@ -5,6 +5,8 @@
  * - Browser + no basePath: same origin — Next.js rewrites proxy /api/* to FastAPI.
  * - SSR: localhost:8000.
  */
+import { CLAUDE_SONNET, CLAUDE_HAIKU } from "@/lib/models";
+
 export function apiBase(): string {
   const fromEnv = process.env.NEXT_PUBLIC_API_URL?.trim();
   if (fromEnv) return fromEnv.replace(/\/$/, "");
@@ -124,7 +126,7 @@ export async function searchImages(
 
 export async function enhancePrompt(
   prompt: string,
-  model = "claude-haiku-4-5-20251001",
+  model = CLAUDE_HAIKU,
   onChunk?: (chunk: string) => void,
   onSearchStart?: (query: string) => void,
   onSearchDone?: (refs: EnhanceResult["webRefs"]) => void,
@@ -277,7 +279,7 @@ export async function refine(
   runId: string,
   instruction: string,
   backend = "claude",
-  model = "claude-sonnet-4-6"
+  model = CLAUDE_SONNET
 ): Promise<GenerateResult> {
   const res = await fetch(`${apiBase()}/api/refine`, {
     method: "POST",
@@ -296,7 +298,7 @@ export async function refineModule(
   moduleId: string,
   instruction: string,
   backend = "claude",
-  model = "claude-sonnet-4-6",
+  model = CLAUDE_SONNET,
 ): Promise<GenerateResult> {
   const res = await fetch(`${apiBase()}/api/refine-module`, {
     method: "POST",

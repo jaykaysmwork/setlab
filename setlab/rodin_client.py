@@ -231,6 +231,11 @@ def _pick_glb_url(items: List[dict]) -> Tuple[Optional[str], Optional[str]]:
 async def _download_glb(client: httpx.AsyncClient, url: str, dest: Path) -> Path:
     resp = await client.get(url, timeout=300.0, follow_redirects=True)
     resp.raise_for_status()
+    if resp.content[:4] != b"glTF":
+        raise RuntimeError(
+            f"GLB 다운로드 검증 실패: 응답이 glTF 매직바이트로 시작하지 않습니다 "
+            f"({len(resp.content)} bytes, url={url})."
+        )
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(resp.content)
     return dest

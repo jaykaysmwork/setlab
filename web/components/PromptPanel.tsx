@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, type FormEvent } from "react";
 import { enhancePrompt, searchImages, type SearchImageItem } from "@/lib/api";
+import { CLAUDE_SONNET, CLAUDE_HAIKU } from "@/lib/models";
 import ImagePickerPanel from "./ImagePickerPanel";
 
 interface Props {
@@ -73,7 +74,7 @@ export default function PromptPanel({
   }, [isLoading]);
 
   const isRefineMode = mode === "refine" && hasCurrentSpec;
-  const enhanceModel = backend === "claude" ? model : "claude-haiku-4-5-20251001";
+  const enhanceModel = backend === "claude" ? model : CLAUDE_HAIKU;
 
   useEffect(() => {
     if (mode === "refine") {
@@ -350,7 +351,7 @@ export default function PromptPanel({
 
           {backend !== "claude" && (
             <p className="text-[10px] text-[#666] px-0.5">
-              Enhance uses Claude (claude-sonnet-4-6); generation still uses your selected backend.
+              Enhance uses Claude ({CLAUDE_SONNET}); generation still uses your selected backend.
             </p>
           )}
           {enhanceError && (

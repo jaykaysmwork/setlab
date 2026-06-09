@@ -316,6 +316,11 @@ async def _enhance_one(
             target = out_dir / "meshes" / f"{module_id}.glb"
             resp = await client.get(new_url, timeout=300.0, follow_redirects=True)
             resp.raise_for_status()
+            if resp.content[:4] != b"glTF":
+                raise RuntimeError(
+                    f"[Material] {module_id}: GLB 다운로드 검증 실패 — glTF 매직바이트 불일치 "
+                    f"({len(resp.content)} bytes, url={new_url})."
+                )
             target.write_bytes(resp.content)
             _save_asset_url(out_dir / "meshes", module_id, new_url)
 

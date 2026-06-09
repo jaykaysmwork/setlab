@@ -33,6 +33,7 @@ import {
   type MaterialEnhanceStatus,
   type EnvGenStatus,
 } from "@/lib/api";
+import { CLAUDE_SONNET } from "@/lib/models";
 import { parseMeshExtraDegFromEnv } from "@/lib/meshOrientation";
 import {
   parseAutoPipelineAfterGenerate,
@@ -98,7 +99,7 @@ export default function Home() {
   const [pipelineRunId, setPipelineRunId] = useState<string | null>(null);
 
   const [backend, setBackend] = useState("claude");
-  const [model, setModel] = useState("claude-sonnet-4-6");
+  const [model, setModel] = useState(CLAUDE_SONNET);
   const [ueProject, setUeProject] = useState("");
 
   const runDeployInternal = useCallback(
@@ -138,7 +139,7 @@ export default function Home() {
 
   const handleBackendChange = useCallback((be: string) => {
     setBackend(be);
-    if (be === "claude") setModel("claude-sonnet-4-6");
+    if (be === "claude") setModel(CLAUDE_SONNET);
     else if (be === "ollama") setModel("llama3.1:8b");
   }, []);
 

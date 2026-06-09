@@ -1,6 +1,6 @@
 # SetLab — 코드 리뷰 수정 작업 인수인계 (Handoff)
 
-- 작성: 2026-06-09 (Claude Code 세션)
+- 작성: 2026-06-09 (Claude Code 세션) · 2차 세션: Phase 3(11·14 나머지·15~20) 완료
 - 브랜치: **`code-review-fixes`** (origin = github.com/jaykaysmwork/setlab 에 푸시됨)
 
 ## 다른 컴퓨터에서 이어받기
@@ -13,7 +13,7 @@ git checkout code-review-fixes
 
 # Python (venv는 커밋 안 됨 — 재생성)
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt   # ⚠️ 11번(아래) 먼저 반영하면 더 좋음
+pip install -r requirements.txt && pip install -r server/requirements.txt  # 11번 반영 완료
 # 웹
 cd web && npm install
 ```
@@ -56,26 +56,34 @@ cd web && npm install
 | 13 | UE 바닥이 HD 스케일로 Plane 교체되던 버그(plane 규약으로) | `scripts/ue_set_watcher.py` |
 | 14a | DirectionalLight 색 이중 적용(use_temperature만 사용) | `scripts/ue_set_watcher.py` |
 
-### ⬜ 남은 작업 (여기서부터 이어서)
+### ✅ 완료 (Phase 3 — 2026-06-09 2차 세션 · 코드검증 통과 / UI·서버 런타임 미검증)
 
-**11 — 의존성 교정 `requirements.txt` [미착수, 5분]**
-- `duckduckgo-search>=6.0.0` → **`ddgs>=9.0.0`** (코드는 `from ddgs import DDGS`)
-- 추가: `anthropic>=0.40.0`, `fastapi>=0.110`, `uvicorn[standard]>=0.27`, `python-dotenv>=1.0`
-- (선택) 미사용 제거: `aiohttp`, `lumaapi`
+> 검증: `py_compile`(변경 10파일) · `tests/test_rotation_math.py` · web `tsc --noEmit` **0 에러**.
+> 아래 항목별 상세는 "할 일"이 아니라 "반영된 내용"이다.
 
-**14 나머지 — 작은 정확성 묶음 [미착수, 파일별 병렬 가능]**
+**11 — 의존성 교정 `requirements.txt` [✅ — 핸드오프 대비 범위 축소]**
+- 루트 `requirements.txt`: `duckduckgo-search` → **`ddgs>=9.0.0`**, **`anthropic>=0.40.0`·`python-dotenv>=1.0.0` 추가**, 미사용 `aiohttp`·`lumaapi` 제거
+- `server/requirements.txt`: **`anthropic>=0.40.0` 추가**
+- ⚠️ `fastapi`/`uvicorn`/`python-dotenv`는 **이미 `server/requirements.txt`에 있어** 중복 추가 안 함(핸드오프가 단일 파일 전제라 갭을 과장했었음)
+
+**14 나머지 — 작은 정확성 묶음 [✅ 4종 모두 반영]** (아래 4개 그대로 적용; llm_json은 단일라인 펜스 포함 엣지케이스 5종 실행 검증)
 - `setlab/modify_client.py` `classify()`: `message.stop_reason == "max_tokens"` 가드 추가(claude_client 패턴 그대로)
 - `setlab/llm_json.py` `extract_json_object`: 한 줄 ```` ```{...}``` ```` 펜스에서 `split("\n",1)[1]` IndexError → `nl=text.find("\n"); text=text[nl+1:] if nl!=-1 else text[3:]`
-- `setlab/export_usda.py`: `m.id`/`m.asset`를 `re.sub(r'[^A-Za-z0-9_]','_', ...)`로 새니타이즈(따옴표/개행이 USDA prim 파손)
+- `setlab/export_usda.py`: prim 이름 `m.id`를 `re.sub(r'[^A-Za-z0-9_]','_',...)` + 유효성(숫자-시작/빈문자 방지)·중복제거로 새니타이즈(따옴표/개행/충돌이 USDA prim 파손; `m.asset`은 USDA에 미출력이라 제외)
 - `setlab/rodin_client.py` `_download_glb` + `setlab/material_enhance.py`: 저장 전 GLB 매직바이트 `content[:4]==b"glTF"` 검증, 아니면 RuntimeError
 
-**15~20 — 정리(Phase 3) [미착수]**
-- 15 Tripo 데드코드 삭제: `setlab/mesh_client.py`, `setlab/hd_mesh_client.py`(import 시 ImportError 지뢰)
-- 16 회전수학 단일화 → **#3에서 이미 완료**(`rotation_math.py`)
-- 17 `scripts/unreal_spawn_from_spec.py` 삭제(좌표 틀린 데드코드, 워처가 대체)
-- 18 모델 ID 상수화(`claude-sonnet-4-6`/`claude-haiku-4-5-20251001` 12곳 하드코딩 → 상수)
-- 19 죽은 `*.bin` 복사 루프(`server/main.py:631`, 셸 3종) + `api_refine`의 미사용 import 제거
-- 20 성능: `frameloop="demand"`(Viewer3D/VRViewer), VRViewer 매-tick 재클론 제거, glTF 큐브 공유, Anthropic 클라이언트 풀링
+**15~20 — 정리(Phase 3) [✅ 모두 반영]**
+- 15 ✅ Tripo 데드코드 삭제: `setlab/mesh_client.py`, `setlab/hd_mesh_client.py` (importer 0 확인)
+- 16 ✅ #3에서 이미 완료(`rotation_math.py`) — 변경 없음
+- 17 ✅ `scripts/unreal_spawn_from_spec.py` 삭제 + `docs/PROJECT_SUMMARY.md`·`UNREAL_AUTO_PLACEMENT.md` 참조 갱신
+- 18 ✅ 모델 ID 상수화: 실제 **22곳**(핸드오프 "12곳"은 과소) → 신규 `setlab/model_ids.py`·`web/lib/models.ts` (TS는 `:string` 명시로 협소화 방지)
+- 19 ✅ 죽은 `*.bin` 복사 루프(실제 `server/main.py:654`) + api_refine의 **중복** import 1개(`orient_buildings_toward_floors`, `:567`에 동일본 존재) 제거
+- 20 ✅ 성능 — 핸드오프와 다르게 판단한 부분 있음:
+    - Viewer3D `frameloop="demand"` + 카메라핏 `invalidate()` 추가
+    - VRViewer 클론 useMemo deps `[scene,moduleIds]`로 축소 + 명령형 가시성 effect ("매-tick 재클론"은 부정확: 원래도 메모이즈돼 있었음). **VRViewer는 `always` 유지** — WASD `useFrame` 연속 이동이라 demand면 멈춤
+    - Anthropic 클라이언트 풀링: `claude_client.py`·`modify_client.py` 둘 다 timeout별 캐시
+    - **큐브 공유 미적용**: `ImportedMeshModule:171`은 동적 크기 선택-아웃라인 박스(공유 불가), 유일 단위큐브는 Viewer3D Fallback(로딩 중 1회)뿐이라 실익 없음
+- ➕ 로컬 훅 정리: 프로젝트 `.claude/settings.json`의 경로 오타(`projects`/단수 `project`) gpt_review 훅 제거(전역 `~/.claude` 훅이 대체)
 
 ---
 
@@ -90,6 +98,8 @@ cd web && npm install
   (둘 다 비우면 기존 로컬 동작 그대로). browse 제한은 옵션 `SETLAB_BROWSE_ROOTS`(`:` 구분).
 - **Unreal 변경(13/14a)**: `import unreal` 필요라 여기서 실행 불가 — UE 에디터에서 확인 필요.
 
-## 권장 순서
-새 머신에서 **11(requirements)** → **14 나머지(병렬)** → **15~20 정리**. 각 항목의 정확한
-file:line·수정안은 위에 명시. 막히면 세션의 코드리뷰 보고서(채팅) 근거 참조.
+## 남은 검증 (머지 전 새 머신에서)
+로드맵 1~20은 **전부 반영**됐고 코드 검증(compile/tsc/test)은 통과. **단 UI·서버 런타임은 미검증**이라 `main` 머지 전에:
+- `pip install -r requirements.txt && pip install -r server/requirements.txt` 후 `uvicorn`으로 부팅 + Claude 호출 1회(풀링 경로 스모크)
+- 웹: Viewer3D `demand` 거동(궤도/줌·생성 중 메시 스트리밍·환경 변경 시 화면 갱신), VRViewer 메시표시·선택·WASD 이동
+- Unreal(13/14a): UE 에디터에서 바닥 Plane·DirectionalLight 확인(기존 미검증분)

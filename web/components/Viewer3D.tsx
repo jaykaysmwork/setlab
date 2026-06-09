@@ -2,7 +2,7 @@
 
 import { Canvas, invalidate, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, useGLTF } from "@react-three/drei";
-import { Suspense, useCallback, useEffect, useMemo } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import * as THREE from "three";
 import type { SetSpec } from "@/lib/api";
 import { ImportedMeshModule } from "@/components/ImportedMeshModule";
@@ -44,8 +44,10 @@ function Model({
     return c;
   }, [scene, moduleIds]);
 
-  // Imperatively update visibility without replacing the object (no flicker).
-  useEffect(() => {
+  // Imperatively update visibility without replacing the object. useLayoutEffect
+  // applies it before paint so meshed modules never flash their proxy box for a
+  // frame on (re)mount when meshGlbs is already populated.
+  useLayoutEffect(() => {
     if (moduleIds.size === 0) return;
     cloned.traverse((child) => {
       if (!child.name || !moduleIds.has(child.name)) return;
@@ -78,6 +80,9 @@ function Model({
       (controls as any).target.copy(center);
       (controls as any).update();
     }
+    // frameloop is "demand": imperative camera/controls mutations don't auto-render,
+    // so kick one frame after the fit.
+    invalidate();
 
     return () => {
       useGLTF.clear(url);
@@ -132,6 +137,13 @@ export default function Viewer3D({
     [spec],
   );
 
+  // frameloop is "demand": some environment changes mutate three objects
+  // imperatively (e.g. FogExpBridge sets scene.fog) and don't auto-invalidate,
+  // so kick a frame whenever the resolved scene visual changes.
+  useEffect(() => {
+    invalidate();
+  }, [sceneVisual]);
+
   const meshModules = useMemo(() => {
     if (!spec) return [];
     return Object.entries(meshGlbs)
@@ -172,7 +184,7 @@ export default function Viewer3D({
       <Canvas
         camera={{ position: [30, 25, 30], fov: 50 }}
         gl={{ antialias: true }}
-        frameloop="always"
+        frameloop="demand"
       >
         <Suspense fallback={<Fallback />}>
           <SpecSceneEnvironment visual={sceneVisual} />

@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from typing import Any, Dict, List, Optional
 
 import anthropic
 
 from setlab.llm_json import parse_llm_json_object
+from setlab.model_ids import CLAUDE_SONNET
 
 CLASSIFY_SYSTEM = """You are a real-time scene modification classifier for a virtual production pipeline.
 
@@ -93,18 +95,31 @@ RULES:
 - The user may write in any language (Korean, English, etc.)."""
 
 
+_clients: Dict[float, anthropic.Anthropic] = {}
+_client_lock = threading.Lock()
+
+
 def _get_client(timeout: float = 60.0) -> anthropic.Anthropic:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
-    return anthropic.Anthropic(api_key=api_key, timeout=timeout)
+    # Pool one client per distinct timeout so we reuse the httpx connection pool
+    # instead of building a new client each call (mirrors claude_client).
+    client = _clients.get(timeout)
+    if client is None:
+        with _client_lock:
+            client = _clients.get(timeout)
+            if client is None:
+                client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
+                _clients[timeout] = client
+    return client
 
 
 def classify(
     spec: Dict[str, Any],
     instruction: str,
     *,
-    model: str = "claude-sonnet-4-6",
+    model: str = CLAUDE_SONNET,
     timeout: float = 60.0,
 ) -> Dict[str, Any]:
     """Classify a modification instruction and return structured commands.
@@ -135,6 +150,10 @@ def classify(
         messages=[{"role": "user", "content": user_content}],
     )
     raw = message.content[0].text
+    if message.stop_reason == "max_tokens":
+        raise ValueError(
+            "수정 분류 JSON이 토큰 한도로 잘렸습니다. 더 간단한 지시로 다시 시도해주세요."
+        )
     result = parse_llm_json_object(raw)
 
     if result.get("tier") not in ("instant", "fast", "moderate"):

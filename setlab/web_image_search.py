@@ -15,6 +15,8 @@ from typing import List, Optional
 
 import httpx
 
+from setlab.model_ids import CLAUDE_HAIKU
+
 logger = logging.getLogger(__name__)
 
 # Fast regex pre-check — common obvious patterns (avoids Claude call for clear cases)
@@ -59,7 +61,7 @@ def _claude_detect_search_intent(prompt: str) -> bool:
             return False
         client = anthropic.Anthropic(api_key=api_key, timeout=10.0)
         msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=CLAUDE_HAIKU,
             max_tokens=5,
             system=(
                 "Answer only YES or NO. "
