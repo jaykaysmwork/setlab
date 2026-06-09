@@ -12,7 +12,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -111,12 +111,70 @@ def extract_image_count(prompt: str) -> Optional[int]:
     return None
 
 
-def extract_search_query(prompt: str) -> str:
-    """Extract the main subject to search for from the prompt.
+def build_image_query(prompt: str) -> Dict[str, Any]:
+    """Turn the user's request into a search query + explicit exclusions.
 
-    Falls back to Claude if ambiguous, but tries simple heuristics first.
+    Honors the constraints the user actually wrote — interior vs exterior, day vs
+    night, color vs b/w, "no gif / no moving images", etc. — by asking Claude to
+    distill the whole prompt into a focused English Google-Images query plus a few
+    structured flags. Nothing is hardcoded: only what the prompt states is applied.
+    Falls back to a simple heuristic if Claude is unavailable.
+
+    Returns ``{"query": str, "exclude_animated": bool}``.
     """
-    # Remove the search instruction clauses and keep the subject
+    built = _claude_build_query(prompt)
+    if built:
+        return built
+    return {
+        "query": _heuristic_query(prompt),
+        "exclude_animated": bool(
+            re.search(r"gif|animated|움직이|움짤|moving\s+image", prompt, re.IGNORECASE)
+        ),
+    }
+
+
+def _claude_build_query(prompt: str) -> Optional[Dict[str, Any]]:
+    """Ask Claude (Haiku) to distill the prompt into {query, exclude_animated}."""
+    try:
+        import os
+
+        import anthropic
+
+        from setlab.llm_json import parse_llm_json_object
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return None
+        client = anthropic.Anthropic(api_key=api_key, timeout=15.0)
+        msg = client.messages.create(
+            model=CLAUDE_HAIKU,
+            max_tokens=150,
+            system=(
+                "You turn a user's image/scene request into a Google Images search. "
+                "The user may write in any language and may state visual constraints "
+                "(interior vs exterior, indoor/outdoor, day/night, color vs black-and-white, "
+                "no people, no text/logo, no gif/animated/moving images, era/style, etc.). "
+                'Return ONLY JSON: {"query": "<concise English Google Images query, 3-8 words, '
+                "capturing the main subject AND baking in the visual constraints the user stated "
+                "(e.g. 'interior', 'at night', 'black and white')>\", "
+                '"exclude_animated": <true ONLY if the user asked to avoid gif/animated/moving '
+                "images, else false>}. Do NOT add constraints the user did not state. "
+                "The query MUST be in English."
+            ),
+            messages=[{"role": "user", "content": prompt[:1000]}],
+        )
+        data = parse_llm_json_object(msg.content[0].text)
+        query = str(data.get("query") or "").strip()
+        if not query:
+            return None
+        return {"query": query, "exclude_animated": bool(data.get("exclude_animated"))}
+    except Exception as e:
+        logger.warning("[WebSearch] Claude query builder failed: %s", e)
+        return None
+
+
+def _heuristic_query(prompt: str) -> str:
+    """Fallback query: strip search-instruction clauses, keep the first sentence."""
     cleaned = re.sub(
         r"(search\s+(the\s+)?web.*?[.,]|find\s+images?.*?[.,]|"
         r"look\s+up.*?[.,]|collect.*?[.,]|gather.*?[.,]|"
@@ -125,11 +183,13 @@ def extract_search_query(prompt: str) -> str:
         prompt,
         flags=re.IGNORECASE,
     ).strip()
-
-    # Take first sentence or up to 80 chars as the query subject
     first_sentence = re.split(r"[.!?\n]", cleaned)[0].strip()
-    query = first_sentence[:120] if first_sentence else prompt[:120]
-    return query
+    return first_sentence[:120] if first_sentence else prompt[:120]
+
+
+def extract_search_query(prompt: str) -> str:
+    """Back-compat: the search query that honors the prompt (via build_image_query)."""
+    return build_image_query(prompt)["query"]
 
 
 def search_images(query: str, max_results: int = 10) -> List[str]:
@@ -258,8 +318,12 @@ def download_images(
     out_dir: Path,
     max_images: int = 10,
     timeout: float = 15.0,
+    exclude_animated: bool = False,
 ) -> List[Path]:
-    """Download images from URLs to out_dir. Returns list of saved paths."""
+    """Download images from URLs to out_dir. Returns list of saved paths.
+
+    When ``exclude_animated`` is set, .gif / ``image/gif`` results are skipped.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     saved: List[Path] = []
 
@@ -275,12 +339,16 @@ def download_images(
         for i, url in enumerate(urls):
             if len(saved) >= max_images:
                 break
+            if exclude_animated and url.lower().split("?")[0].endswith(".gif"):
+                continue
             try:
                 resp = client.get(url)
                 if resp.status_code != 200:
                     continue
                 content_type = resp.headers.get("content-type", "")
                 if "image" not in content_type:
+                    continue
+                if exclude_animated and "gif" in content_type.lower():
                     continue
 
                 ext = ".jpg"
@@ -304,11 +372,12 @@ def search_and_download(
     query: str,
     out_dir: Path,
     max_images: int = 10,
+    exclude_animated: bool = False,
 ) -> List[Path]:
-    """High-level: search DuckDuckGo + download images. Returns saved paths."""
+    """High-level: search + download images. Returns saved paths."""
     logger.info("[WebSearch] Searching for: %s (max=%d)", query, max_images)
     urls = search_images(query, max_results=max_images + 5)
     if not urls:
         logger.warning("[WebSearch] No image URLs found for query: %s", query)
         return []
-    return download_images(urls, out_dir, max_images=max_images)
+    return download_images(urls, out_dir, max_images=max_images, exclude_animated=exclude_animated)

@@ -178,7 +178,7 @@ def api_enhance_prompt(req: EnhancePromptRequest):
         raise HTTPException(status_code=422, detail="prompt is empty")
 
     from setlab import claude_client
-    from setlab.web_image_search import has_search_intent, extract_search_query, search_and_download
+    from setlab.web_image_search import has_search_intent, build_image_query, search_and_download
     import json as _json_mod
 
     prompt = req.prompt.strip()
@@ -192,11 +192,12 @@ def api_enhance_prompt(req: EnhancePromptRequest):
         else:
             # Auto-detect search intent and fetch images first
             if has_search_intent(prompt):
-                query = extract_search_query(prompt)
+                spec = build_image_query(prompt)
+                query = spec["query"]
                 yield f"event: search_start\ndata: {query}\n\n"
                 try:
                     refs_dir = OUT_ROOT / "_web_refs" / re.sub(r"[^\w\s-]", "", query)[:60].strip()
-                    paths = search_and_download(query, refs_dir, max_images=10)
+                    paths = search_and_download(query, refs_dir, max_images=10, exclude_animated=spec["exclude_animated"])
                     reference_images = [str(p) for p in paths]
                     rel_paths = [str(p.relative_to(OUT_ROOT)) for p in paths]
                     yield f"event: search_done\ndata: {_json_mod.dumps({'query': query, 'images': rel_paths, 'refs_dir': str(refs_dir)})}\n\n"
@@ -221,13 +222,16 @@ def api_enhance_prompt(req: EnhancePromptRequest):
 @app.post("/api/search-images")
 def api_search_images(req: SearchImagesRequest):
     """Search DuckDuckGo and download images. Returns list of image URLs + server paths."""
-    from setlab.web_image_search import has_search_intent, extract_search_query, extract_image_count, search_and_download
+    from setlab.web_image_search import has_search_intent, build_image_query, extract_image_count, search_and_download
 
     source_text = req.prompt.strip() or req.query.strip()
+    exclude_animated = False
     if req.query.strip():
         query = req.query.strip()
     elif req.prompt.strip() and has_search_intent(req.prompt.strip()):
-        query = extract_search_query(req.prompt.strip())
+        spec = build_image_query(req.prompt.strip())
+        query = spec["query"]
+        exclude_animated = spec["exclude_animated"]
     else:
         return {"detected": False, "query": "", "images": [], "refs_dir": ""}
 
@@ -238,7 +242,7 @@ def api_search_images(req: SearchImagesRequest):
     slug = re.sub(r"[^\w\s-]", "", query)[:60].strip()
     refs_dir = OUT_ROOT / "_web_refs" / slug
     try:
-        paths = search_and_download(query, refs_dir, max_images=max_images)
+        paths = search_and_download(query, refs_dir, max_images=max_images, exclude_animated=exclude_animated)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
