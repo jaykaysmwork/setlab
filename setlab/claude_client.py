@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from typing import Any, Dict, List, Optional
 
 import anthropic
 
 from setlab.llm_json import parse_llm_json_object
+from setlab.model_ids import CLAUDE_HAIKU, CLAUDE_SONNET
 from setlab.prompts import layout_system_prompt, user_message
 
 REFINE_SYSTEM = """You are a 3D set layout engine. You will receive an existing JSON layout and an instruction to modify it.
@@ -18,9 +20,29 @@ Return ONLY valid JSON (no markdown, no explanation) with the same schema:
 {
   "title": string,
   "era_style": string,
+  "ground_material": "cobblestone / asphalt / grass / concrete / dirt / sand / marble / wood_plank",
+  "environment": {
+    "time_of_day": "noon",
+    "weather": "clear",
+    "fog_density": 0.02,
+    "sun_intensity": 10.0,
+    "sun_color_temp": 6500
+  },
   "notes": string,
   "modules": [ ... all modules ... ]
 }
+
+PRESERVE ground_material and environment EXACTLY as given in the existing layout.
+Copy them through unchanged unless the user's instruction specifically asks to
+change the ground surface, time of day, weather, fog, or lighting. If you change
+them, keep the same field shapes:
+  ground_material: one of cobblestone / asphalt / concrete / grass / dirt / sand /
+    gravel / marble / wood_plank / brick / slate / snow / mud
+  environment.time_of_day: dawn / morning / noon / afternoon / golden_hour / sunset / dusk / night
+  environment.weather:     clear / overcast / cloudy / foggy / rainy / stormy / snowy
+  environment.fog_density: 0.0 (none) to 1.0 (very dense)
+  environment.sun_intensity: 0.0 (pitch black) to 100.0 (harsh desert)
+  environment.sun_color_temp: Kelvin (2000 warm → 5500 neutral → 10000 cool)
 
 COORDINATE SYSTEM:
   - Y is up, X and Z are horizontal. Roads typically run along Z.
@@ -44,13 +66,27 @@ The user may write instructions in any language (Korean, English, etc.).
 """
 
 
+_clients: Dict[float, anthropic.Anthropic] = {}
+_client_lock = threading.Lock()
+
+
 def _get_client(timeout: float = 120.0) -> anthropic.Anthropic:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError(
             "ANTHROPIC_API_KEY not set. Get one at https://console.anthropic.com/settings/keys"
         )
-    return anthropic.Anthropic(api_key=api_key, timeout=timeout)
+    # Pool one client per distinct timeout (only a couple of values are used) so we
+    # reuse the underlying httpx connection pool instead of constructing a new
+    # client on every call. Thread-safe via double-checked locking.
+    client = _clients.get(timeout)
+    if client is None:
+        with _client_lock:
+            client = _clients.get(timeout)
+            if client is None:
+                client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
+                _clients[timeout] = client
+    return client
 
 
 def _parse(text: str) -> Dict[str, Any]:
@@ -60,7 +96,7 @@ def _parse(text: str) -> Dict[str, Any]:
 def generate_raw(
     brief: str,
     *,
-    model: str = "claude-sonnet-4-6",
+    model: str = CLAUDE_SONNET,
     timeout: float = 120.0,
     max_modules: Optional[int] = None,
 ) -> Dict[str, Any]:
@@ -84,7 +120,7 @@ def refine_raw(
     existing_spec: Dict[str, Any],
     instruction: str,
     *,
-    model: str = "claude-sonnet-4-6",
+    model: str = CLAUDE_SONNET,
     timeout: float = 120.0,
 ) -> Dict[str, Any]:
     client = _get_client(timeout)
@@ -137,7 +173,7 @@ def refine_single_module_raw(
     era_style: str = "",
     instruction: str,
     reference_modules: Optional[List[Dict[str, Any]]] = None,
-    model: str = "claude-sonnet-4-6",
+    model: str = CLAUDE_SONNET,
     timeout: float = 120.0,
 ) -> Dict[str, Any]:
     """Return updated single module dict; id must match input.
@@ -201,20 +237,111 @@ def _strip_plain_text_response(text: str) -> str:
 ENHANCE_PROMPT_SYSTEM = """You are a senior art director and layout designer. The user writes a rough idea (any language). You rewrite it into a single, maximally specific English scene brief for a downstream 3D set-layout model that emits JSON modules (roads, sidewalks, buildings, vegetation, props).
 
 Goals (photoreal / film-set fidelity the layout and text-to-3D steps can actually use):
-- **Spatial layout**: Y-up meters. Name approximate positions (e.g. central road along +Z, building rows at ±X), road width/length, sidewalk widths, setbacks, lane count if relevant, where the camera “hero” view would sit.
-- **Architecture & era**: Materials (stucco, glass curtain wall, weathered concrete), roofline, floor count ranges, signage style, regional cues (e.g. Seoul backstreet vs. LA strip mall), decade or “timeless contemporary”.
+- **Spatial layout**: Y-up meters. Name approximate positions (e.g. central road along +Z, building rows at ±X), road width/length, sidewalk widths, setbacks, lane count if relevant, where the camera "hero" view would sit.
+- **Architecture & era**: Materials (stucco, glass curtain wall, weathered concrete), roofline, floor count ranges, signage style, regional cues (e.g. Seoul backstreet vs. LA strip mall), decade or "timeless contemporary".
 - **Lighting & atmosphere**: Time of day, sun direction if implied, weather (clear / haze / wet pavement), color temperature, key practicals (neon, sodium vapor, LED storefronts).
 - **Surface & detail**: Ground (asphalt wear, cracks, manhole covers), curbs, street furniture (benches, bollards, bike racks), vegetation species and spacing, parked vehicles or empty stalls if it matters.
 - **Population & story**: Optional light narrative (quiet dawn vs. crowded evening) without inventing named characters unless the user did.
 - **Module-oriented hints**: Call out distinct zones the layout engine should separate (e.g. east/west sidewalks, median, park strip, façade modules) so each gets a clear description for later mesh generation.
-- **Constraints**: Do not output JSON. Do not use markdown code fences. Plain prose or tight bullet phrases. Prefer **about 350–900 words** when the idea is rich; shorter only if the user gave almost nothing (then still add sane defaults). No meta (“Here is the enhanced prompt”). Start directly with the scene."""
+- **Constraints**: Do not output JSON. Do not use markdown code fences. Plain prose or tight bullet phrases. Prefer **about 150–300 words**; be concise but concrete. No meta ("Here is the enhanced prompt"). Start directly with the scene."""
+
+ENHANCE_WITH_IMAGES_SYSTEM = """You are a senior art director and layout designer. You have been given reference images of the subject. Analyze every visible detail from ALL provided images and write a single, maximally specific English scene brief for a downstream 3D set-layout model.
+
+Your description MUST be grounded in what you actually see in the images — do not invent details not visible. Describe:
+- **Exact architectural forms**: roof shapes, tower/spire positions, asymmetries, overhangs, porches
+- **Materials & surface**: wall finish (stucco, brick, wood, stone), color, weathering, texture
+- **Openings**: window shapes/sizes/placement, door style, any decorative trim
+- **Scale & proportions**: approximate height, width, footprint, floor count
+- **Surroundings**: landscaping, fencing, driveway, street context visible in photos
+- **Unique identifying features**: anything that makes this structure distinctive
+- **Module-oriented hints**: how to split into 3D modules (main body, towers, roof, base, surrounding walls, vegetation)
+- **Constraints**: Do not output JSON. Plain prose or tight bullet phrases. About 200–350 words. Start directly with the scene."""
+
+
+def _enhance_user_content(brief: str) -> str:
+    return (
+        "Original user brief (any language):\n"
+        f"{brief}\n\n"
+        "Write ONE enhanced scene brief in English only. It will be pasted into the layout generator and into text-to-3D / image-to-3D pipelines — maximize concrete, checkable visual detail while staying internally consistent."
+    )
+
+
+def _build_image_content(image_paths: list) -> list:
+    """Build Claude multimodal content blocks from image file paths."""
+    import base64
+    from pathlib import Path as _Path
+
+    blocks = []
+    for p in image_paths:
+        try:
+            data = _Path(p).read_bytes()
+            ext = _Path(p).suffix.lower().lstrip(".")
+            media = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}.get(ext, "image/jpeg")
+            blocks.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": media, "data": base64.standard_b64encode(data).decode()},
+            })
+        except Exception:
+            continue
+    return blocks
+
+
+def enhance_prompt_stream(
+    brief: str,
+    *,
+    model: str = CLAUDE_HAIKU,
+    timeout: float = 60.0,
+    reference_images: list | None = None,
+):
+    """Yield text chunks as Claude generates the enhanced scene brief.
+
+    If reference_images (list of file paths) are provided, Claude analyzes the
+    actual images and grounds the description in what it sees.
+    """
+    brief = brief.strip()
+    if not brief:
+        raise ValueError("Brief is empty")
+
+    client = _get_client(timeout)
+
+    if reference_images:
+        image_blocks = _build_image_content(reference_images)
+        if image_blocks:
+            content = image_blocks + [{
+                "type": "text",
+                "text": (
+                    f"Original user brief: {brief}\n\n"
+                    "Analyze ALL the reference images above carefully. "
+                    "Write ONE enhanced scene brief grounded in what you actually see. "
+                    "Do not invent details not visible in the images."
+                ),
+            }]
+            use_model = CLAUDE_SONNET  # vision requires a capable model
+            with client.messages.stream(
+                model=use_model,
+                max_tokens=800,
+                system=ENHANCE_WITH_IMAGES_SYSTEM,
+                messages=[{"role": "user", "content": content}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield text
+            return
+
+    with client.messages.stream(
+        model=model,
+        max_tokens=600,
+        system=ENHANCE_PROMPT_SYSTEM,
+        messages=[{"role": "user", "content": _enhance_user_content(brief)}],
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
 
 
 def enhance_prompt_raw(
     brief: str,
     *,
-    model: str = "claude-sonnet-4-6",
-    timeout: float = 180.0,
+    model: str = CLAUDE_HAIKU,
+    timeout: float = 60.0,
 ) -> str:
     """Return an expanded English scene brief for the layout generator."""
     brief = brief.strip()
@@ -222,16 +349,11 @@ def enhance_prompt_raw(
         raise ValueError("Brief is empty")
 
     client = _get_client(timeout)
-    user_content = (
-        "Original user brief (any language):\n"
-        f"{brief}\n\n"
-        "Write ONE enhanced scene brief in English only. It will be pasted into the layout generator and into text-to-3D / image-to-3D pipelines — maximize concrete, checkable visual detail while staying internally consistent."
-    )
     message = client.messages.create(
         model=model,
-        max_tokens=4096,
+        max_tokens=600,
         system=ENHANCE_PROMPT_SYSTEM,
-        messages=[{"role": "user", "content": user_content}],
+        messages=[{"role": "user", "content": _enhance_user_content(brief)}],
     )
     raw = message.content[0].text
     if message.stop_reason == "max_tokens":

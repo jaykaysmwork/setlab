@@ -2,23 +2,11 @@ from __future__ import annotations
 
 import base64
 import json
-import math
 import struct
 from typing import Any, Dict, List, Tuple
 
 from setlab.models import ModulePlacement
-
-
-def _euler_deg_xyz_to_quat(rx: float, ry: float, rz: float) -> Tuple[float, float, float, float]:
-    rx, ry, rz = map(math.radians, (rx, ry, rz))
-    cx, sx = math.cos(rx * 0.5), math.sin(rx * 0.5)
-    cy, sy = math.cos(ry * 0.5), math.sin(ry * 0.5)
-    cz, sz = math.cos(rz * 0.5), math.sin(rz * 0.5)
-    qw = cx * cy * cz + sx * sy * sz
-    qx = sx * cy * cz - cx * sy * sz
-    qy = cx * sy * cz + sx * cy * sz
-    qz = cx * cy * sz - sx * sy * cz
-    return (qx, qy, qz, qw)
+from setlab.rotation_math import euler_deg_xyz_to_quat as _euler_deg_xyz_to_quat
 
 
 def _unit_cube_mesh() -> Tuple[bytes, bytes, bytes]:

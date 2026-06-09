@@ -27,7 +27,7 @@
 - Unreal 에디터 트랜스폼은 기본이 **센티미터(cm)** 인 경우가 많습니다. 스크립트는 **미터 → cm (`* 100`)** 를 적용합니다. 프로젝트가 **미터**로 통일돼 있으면 그에 맞게 `SCALE_M_TO_UU` 만 조정하세요.  
 - `ASSET_MAP` 의 키는 JSON의 **`asset`** 문자열과 맞추고, 값은 **본인 프로젝트의 Static Mesh 소프트 오브젝트 경로**로 바꿉니다. (Content Browser에서 메시 **우클릭 → Copy Reference**)
 
-스크립트: `scripts/unreal_spawn_from_spec.py`
+스크립트: ~~`scripts/unreal_spawn_from_spec.py`~~ — **제거됨**(좌표 규약이 낡은 데드코드였음). 자동 임포트·배치·조명·실시간 수정은 `scripts/ue_set_watcher.py` 워처가 대체합니다.
 
 ---
 

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { apiBase } from "@/lib/api";
+import { apiBase, authHeaders } from "@/lib/api";
 
 interface Entry {
   name: string;
@@ -30,7 +30,9 @@ export default function FolderBrowser({ initialPath, onSelect, onClose }: Props)
   const browse = useCallback(async (path: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`${apiBase()}/api/browse?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`${apiBase()}/api/browse?path=${encodeURIComponent(path)}`, {
+        headers: { ...authHeaders() },
+      });
       if (res.ok) {
         setResult(await res.json());
       }

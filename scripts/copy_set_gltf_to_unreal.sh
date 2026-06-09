@@ -2,7 +2,7 @@
 # Copy setlab glTF output into an Unreal project's Content folder, then Reimport in UE.
 #
 # Usage:
-#   ./scripts/copy_set_gltf_to_unreal.sh /path/to/MyProject /path/to/3D-test/out/run
+#   ./scripts/copy_set_gltf_to_unreal.sh /path/to/MyProject /path/to/setlab/out/run
 #
 # After run: in Unreal Content Browser, select imported "set" (under Incoming/) → Reimport.
 

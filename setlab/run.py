@@ -23,6 +23,7 @@ from setlab.export_gltf import spec_to_gltf_dict
 from setlab.export_usda import spec_to_usda
 from setlab.layout_orient import orient_buildings_toward_floors
 from setlab.models import SetSpec
+from setlab.model_ids import CLAUDE_SONNET
 
 _log = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ def generate_set(
     prompt: str,
     *,
     backend: str = "mock",
-    model: str = "llama3.1:8b",
+    model: str = "qwen2.5-coder:32b",
     ollama_url: str = "http://127.0.0.1:11434",
     out_dir: Union[Path, str] = Path("out/pilot"),
     max_modules: Optional[int] = None,
@@ -142,9 +143,9 @@ def main() -> int:
     model = args.model
     if model is None:
         if args.backend == "claude":
-            model = os.environ.get("MODEL", "claude-sonnet-4-6")
+            model = os.environ.get("MODEL", CLAUDE_SONNET)
         else:
-            model = os.environ.get("MODEL", "llama3.1:8b")
+            model = os.environ.get("MODEL", "qwen2.5-coder:32b")
 
     try:
         spec, out = generate_set(

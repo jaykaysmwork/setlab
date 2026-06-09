@@ -33,6 +33,7 @@ import {
   type MaterialEnhanceStatus,
   type EnvGenStatus,
 } from "@/lib/api";
+import { CLAUDE_SONNET } from "@/lib/models";
 import { parseMeshExtraDegFromEnv } from "@/lib/meshOrientation";
 import {
   parseAutoPipelineAfterGenerate,
@@ -58,6 +59,8 @@ export default function Home() {
   const [meshStatus, setMeshStatus] = useState<MeshGenStatus | null>(null);
   const [meshGlbs, setMeshGlbs] = useState<Record<string, string>>({});
   const meshGlbCopyBustRef = useRef<Record<string, number>>({});
+  /** `${runId}:${moduleId}` already given a fresh bust token for this HD run. */
+  const hdBustDoneRef = useRef<Set<string>>(new Set());
   const [isMeshGenerating, setIsMeshGenerating] = useState(false);
   const [meshPollToken, setMeshPollToken] = useState(0);
   const [meshedOnlyView, setMeshedOnlyView] = useState(false);
@@ -96,7 +99,7 @@ export default function Home() {
   const [pipelineRunId, setPipelineRunId] = useState<string | null>(null);
 
   const [backend, setBackend] = useState("claude");
-  const [model, setModel] = useState("claude-sonnet-4-6");
+  const [model, setModel] = useState(CLAUDE_SONNET);
   const [ueProject, setUeProject] = useState("");
 
   const runDeployInternal = useCallback(
@@ -136,7 +139,7 @@ export default function Home() {
 
   const handleBackendChange = useCallback((be: string) => {
     setBackend(be);
-    if (be === "claude") setModel("claude-sonnet-4-6");
+    if (be === "claude") setModel(CLAUDE_SONNET);
     else if (be === "ollama") setModel("llama3.1:8b");
   }, []);
 
@@ -155,20 +158,31 @@ export default function Home() {
 
   const applyMeshStatus = useCallback((runId: string, status: MeshGenStatus) => {
     setMeshStatus(status);
-    const glbs: Record<string, string> = {};
-    for (const [moduleId, modStatus] of Object.entries(status.modules)) {
-      if (modStatus === "done") {
-        const base = gltfUrl(`/api/outputs/${runId}/meshes/${moduleId}.glb`);
-        const b = meshGlbCopyBustRef.current[moduleId];
-        glbs[moduleId] = b != null ? `${base}?t=${b}` : base;
+    setMeshGlbs((prev) => {
+      const glbs: Record<string, string> = {};
+      for (const [moduleId, modStatus] of Object.entries(status.modules)) {
+        if (modStatus === "done") {
+          const base = gltfUrl(`/api/outputs/${runId}/meshes/${moduleId}.glb`);
+          const b = meshGlbCopyBustRef.current[moduleId];
+          glbs[moduleId] = b != null ? `${base}?t=${b}` : base;
+        }
       }
-    }
-    setMeshGlbs(glbs);
+      const prevKeys = Object.keys(prev);
+      const newKeys = Object.keys(glbs);
+      if (
+        prevKeys.length === newKeys.length &&
+        newKeys.every((k) => prev[k] === glbs[k])
+      ) {
+        return prev;
+      }
+      return glbs;
+    });
     setIsMeshGenerating(status.status === "running");
   }, []);
 
   useEffect(() => {
     meshGlbCopyBustRef.current = {};
+    hdBustDoneRef.current = new Set();
   }, [currentRunId]);
 
   const handleMeshGlbCopied = useCallback((toModuleId: string) => {
@@ -218,10 +232,16 @@ export default function Home() {
         if (status.status === "running") {
           timeoutId = setTimeout(tick, 2000);
         }
-      } catch {
+      } catch (e) {
         if (!cancelled) {
-          setMeshStatus(null);
           setIsMeshGenerating(false);
+          setMeshStatus({
+            status: "failed",
+            total: 0,
+            done: 0,
+            modules: {},
+            error: e instanceof Error ? e.message : "메시 상태 조회 실패",
+          });
         }
       }
     };
@@ -268,7 +288,7 @@ export default function Home() {
         setIsHdGenerating(false);
       }
     })();
-  }, [meshStatus, currentRunId, autoPipeline.hd]);
+  }, [meshStatus?.status, currentRunId, autoPipeline.hd]);
 
   const handlePerModuleGlbExtraDeg = useCallback(
     (moduleId: string, next: [number, number, number]) => {
@@ -290,7 +310,18 @@ export default function Home() {
       const glbs: Record<string, string> = {};
       for (const [moduleId, modStatus] of Object.entries(status.modules)) {
         if (modStatus === "done") {
-          glbs[moduleId] = gltfUrl(`/api/outputs/${runId}/meshes/${moduleId}.glb`);
+          // HD overwrites the same <id>.glb; bust the URL so drei refetches the
+          // HD mesh instead of serving the stale low-res cached one. Force a
+          // fresh token once per module per HD run (stable across repeat polls,
+          // and independent of any pre-existing mesh/copy token).
+          const hdKey = `${runId}:${moduleId}`;
+          if (!hdBustDoneRef.current.has(hdKey)) {
+            meshGlbCopyBustRef.current[moduleId] = Date.now();
+            hdBustDoneRef.current.add(hdKey);
+          }
+          const base = gltfUrl(`/api/outputs/${runId}/meshes/${moduleId}.glb`);
+          const b = meshGlbCopyBustRef.current[moduleId];
+          glbs[moduleId] = `${base}?t=${b}`;
         }
       }
       setMeshGlbs((prev) => ({ ...prev, ...glbs }));
@@ -311,9 +342,17 @@ export default function Home() {
         if (status.status === "running") {
           timeoutId = setTimeout(tick, 5000);
         }
-      } catch {
+      } catch (e) {
         if (!cancelled) {
           setIsHdGenerating(false);
+          setHdStatus({
+            status: "failed",
+            phase: "error",
+            total: 0,
+            done: 0,
+            modules: {},
+            error: e instanceof Error ? e.message : "HD 상태 조회 실패",
+          });
         }
       }
     };
@@ -342,8 +381,17 @@ export default function Home() {
         } else if (status.status === "completed") {
           setMeshPollToken((t) => t + 1);
         }
-      } catch {
-        if (!cancelled) setIsMaterialEnhancing(false);
+      } catch (e) {
+        if (!cancelled) {
+          setIsMaterialEnhancing(false);
+          setMaterialStatus({
+            status: "failed",
+            total: 0,
+            done: 0,
+            modules: {},
+            error: e instanceof Error ? e.message : "머티리얼 상태 조회 실패",
+          });
+        }
       }
     };
 
@@ -413,8 +461,8 @@ export default function Home() {
     autoPost.material,
     autoPost.deploy,
     autoPost.marble,
-    meshStatus,
-    hdStatus,
+    meshStatus?.status,
+    hdStatus?.status,
   ]);
 
   /** HD(또는 메시만) 성공 후 자동 머티리얼 향상 시작. */
@@ -765,8 +813,7 @@ export default function Home() {
         setCurrentSpec(result.spec);
         setCurrentRunId(result.id);
         setCurrentGltf(gltfUrl(result.gltfUrl));
-        const updated = await fetchHistory();
-        setHistory(updated);
+        fetchHistory().then(setHistory).catch(() => {});
 
         const followup = autoPipeline.mesh || autoPipeline.hd;
         const postOnly =
@@ -873,8 +920,7 @@ export default function Home() {
         setCurrentRunId(result.id);
         setCurrentGltf(gltfUrl(result.gltfUrl));
         setMeshPollToken((t) => t + 1);
-        const updated = await fetchHistory();
-        setHistory(updated);
+        fetchHistory().then(setHistory).catch(() => {});
       } catch (e) {
         setError(e instanceof Error ? e.message : "Unknown error");
       } finally {
@@ -921,6 +967,14 @@ export default function Home() {
   const handleMeshGen = useCallback(async (onlyModuleIds?: string[]) => {
     if (!currentRunId) return;
     try {
+      // Regenerating overwrites the same <id>.glb on disk; bust the URL so drei
+      // refetches instead of returning the stale cached mesh.
+      if (onlyModuleIds?.length) {
+        const t = Date.now();
+        for (const id of onlyModuleIds) {
+          meshGlbCopyBustRef.current[id] = t;
+        }
+      }
       await startMeshGen(
         currentRunId,
         onlyModuleIds?.length ? { moduleIds: onlyModuleIds } : undefined,

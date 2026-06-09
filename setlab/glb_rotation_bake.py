@@ -2,52 +2,17 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any, Dict, List, Tuple
 
+# Euler<->quat math lives in one shared, dependency-free module so this module,
+# export_gltf, and the web viewer all stay on the same Three.js 'XYZ' convention.
+from setlab.rotation_math import (
+    euler_deg_xyz_to_quat,
+    euler_deg_xyz_from_quat,
+    quat_multiply,
+)
+
 Vec3 = Tuple[float, float, float]
-
-
-def euler_deg_xyz_to_quat(rx: float, ry: float, rz: float) -> Tuple[float, float, float, float]:
-    """Same convention as setlab.export_gltf._euler_deg_xyz_to_quat → glTF (x,y,z,w)."""
-    rx, ry, rz = map(math.radians, (rx, ry, rz))
-    cx, sx = math.cos(rx * 0.5), math.sin(rx * 0.5)
-    cy, sy = math.cos(ry * 0.5), math.sin(ry * 0.5)
-    cz, sz = math.cos(rz * 0.5), math.sin(rz * 0.5)
-    qw = cx * cy * cz + sx * sy * sz
-    qx = sx * cy * cz - cx * sy * sz
-    qy = cx * sy * cz + sx * cy * sz
-    qz = cx * cy * sz - sx * sy * cz
-    return (qx, qy, qz, qw)
-
-
-def quat_multiply(
-    ax: float, ay: float, az: float, aw: float,
-    bx: float, by: float, bz: float, bw: float,
-) -> Tuple[float, float, float, float]:
-    """Hamilton product a * b (same as Three.js Quaternion.multiply)."""
-    x = aw * bx + ax * bw + ay * bz - az * by
-    y = aw * by - ax * bz + ay * bw + az * bx
-    z = aw * bz + ax * by - ay * bx + az * bw
-    w = aw * bw - ax * bx - ay * by - az * bz
-    return (x, y, z, w)
-
-
-def euler_deg_xyz_from_quat(x: float, y: float, z: float, w: float) -> Vec3:
-    """Inverse of euler_deg_xyz_to_quat; matches Three.js Euler order 'XYZ' (degrees)."""
-
-    def clamp(t: float) -> float:
-        return max(-1.0, min(1.0, t))
-
-    t0 = 2.0 * (w * x + y * z)
-    t1 = 1.0 - 2.0 * (x * x + y * y)
-    ex = math.atan2(t0, t1)
-    t2 = clamp(2.0 * (w * y - z * x))
-    ey = math.asin(t2)
-    t3 = 2.0 * (w * z + x * y)
-    t4 = 1.0 - 2.0 * (y * y + z * z)
-    ez = math.atan2(t3, t4)
-    return (math.degrees(ex), math.degrees(ey), math.degrees(ez))
 
 
 def build_extra_euler_chain_deg(

@@ -487,12 +487,9 @@ def _setup_full_lighting(env):
         comp = dl.get_component_by_class(unreal.DirectionalLightComponent)
         if comp:
             comp.set_editor_property("intensity", sun_intensity)
-            comp.set_editor_property("light_color", unreal.Color(
-                r=int(_color_temp_to_rgb(sun_color_temp)[0] * 255),
-                g=int(_color_temp_to_rgb(sun_color_temp)[1] * 255),
-                b=int(_color_temp_to_rgb(sun_color_temp)[2] * 255),
-                a=255,
-            ))
+            # Use blackbody temperature for tint; keep light_color neutral so the
+            # temperature is applied exactly once (no manual RGB double-tint).
+            comp.set_editor_property("light_color", unreal.Color(r=255, g=255, b=255, a=255))
             comp.set_editor_property("use_temperature", True)
             comp.set_editor_property("temperature", float(sun_color_temp))
             try:
@@ -659,7 +656,12 @@ def _place_from_spec():
             rot = _setlab_rot_to_ue(rx, ry, rz)
         hd_mesh = _find_static_mesh_for_module(m["id"])
 
-        if hd_mesh is not None:
+        # Decide the mesh first: floor modules swap to the centered 1m engine
+        # Plane, so they must NOT use the HD-bounds-fitted scale/offset below.
+        is_floor = m.get("asset", "") == "mod_floor"
+        floor_uses_plane = is_floor and plane_mesh and ground_keyword
+
+        if hd_mesh is not None and not floor_uses_plane:
             half_ext, center = _get_mesh_bounds_cm(hd_mesh)
 
             if half_ext is not None and half_ext.x > 0.01 and half_ext.y > 0.01 and half_ext.z > 0.01:
@@ -705,9 +707,8 @@ def _place_from_spec():
         actor.tags.append(SET_TAG)
 
         smc = actor.get_component_by_class(unreal.StaticMeshComponent)
-        is_floor = m.get("asset", "") == "mod_floor"
 
-        if is_floor and plane_mesh and ground_keyword:
+        if floor_uses_plane:
             use_mesh = plane_mesh
         elif hd_mesh is not None:
             use_mesh = hd_mesh

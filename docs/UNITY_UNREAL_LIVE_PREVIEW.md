@@ -45,7 +45,7 @@ my_brief.txt → setlab.run → out/live/set.gltf  (+ set_spec.json)
 Unity 쪽 복사용 셸 예시 (경로만 본인 것으로):
 
 ```bash
-cp /path/to/3D-test/out/live/set.gltf "/path/to/MyUnityProject/Assets/Incoming/set.gltf"
+cp /path/to/setlab/out/live/set.gltf "/path/to/MyUnityProject/Assets/Incoming/set.gltf"
 ```
 
 ---

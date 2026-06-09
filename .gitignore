@@ -6,3 +6,4 @@ web/out/
 web/.next/
 .env
 .DS_Store
+.claude/

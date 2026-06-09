@@ -29,7 +29,7 @@ UE 프로젝트 Content/Incoming 에 복사 →  파일 변경 감지!
 ### 1) `.env` 파일 만들기
 
 ```bash
-cd /path/to/3D-test
+cd /path/to/setlab
 cp .env.example .env
 ```
 
@@ -52,7 +52,7 @@ Unreal 에디터에서 **Tools → Execute Python Script** → `scripts/ue_auto_
 또는 **Output Log** 옆 **Cmd** 드롭다운을 **Python** 으로 바꾸고:
 
 ```python
-exec(open("/path/to/3D-test/scripts/ue_auto_reimport.py").read())
+exec(open("/path/to/setlab/scripts/ue_auto_reimport.py").read())
 ```
 
 터미널에 `[SetLab] Watcher started` 로그가 뜨면 성공.  

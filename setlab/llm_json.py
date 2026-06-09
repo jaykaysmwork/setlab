@@ -11,7 +11,10 @@ def extract_json_object(text: str) -> str:
     if not text:
         raise ValueError("LLM returned empty response")
     if text.startswith("```"):
-        text = text.split("\n", 1)[1]
+        # Drop the opening fence line (```lang). A single-line ```{...}``` fence
+        # has no newline, so fall back to stripping just the leading backticks.
+        nl = text.find("\n")
+        text = text[nl + 1 :] if nl != -1 else text[3:]
         text = text.rsplit("```", 1)[0].strip()
     start = text.find("{")
     end = text.rfind("}")

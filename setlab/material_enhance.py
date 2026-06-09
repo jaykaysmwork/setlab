@@ -78,17 +78,17 @@ def _rodin_key() -> str:
 
 
 def _load_asset_urls(out_dir: Path) -> Dict[str, str]:
-    urls_file = out_dir / "meshes" / "_asset_urls.json"
-    if urls_file.exists():
-        return json.loads(urls_file.read_text())
-    return {}
+    # Delegate to the shared, locked reader (one process-wide lock).
+    from setlab._asset_urls import load_asset_urls
+
+    return load_asset_urls(out_dir)
 
 
 def _save_asset_url(meshes_dir: Path, module_id: str, asset_url: str) -> None:
-    urls_file = meshes_dir / "_asset_urls.json"
-    existing = json.loads(urls_file.read_text()) if urls_file.exists() else {}
-    existing[module_id] = asset_url
-    urls_file.write_text(json.dumps(existing, indent=2))
+    # Delegate to the shared, locked, atomic writer (one process-wide lock).
+    from setlab._asset_urls import save_asset_url
+
+    save_asset_url(meshes_dir, module_id, asset_url)
 
 
 async def _load_glb_bytes(
@@ -159,6 +159,9 @@ async def _hyper3d_poll(client: httpx.AsyncClient, subscription_key: str) -> Non
         "Content-Type": "application/json",
     }
     while True:
+        if time.monotonic() - start > ENHANCE_TIMEOUT:
+            raise TimeoutError("Rodin texture-only timed out")
+
         resp = await client.post(
             f"{RODIN_API_BASE}/status",
             headers=headers,
@@ -180,9 +183,6 @@ async def _hyper3d_poll(client: httpx.AsyncClient, subscription_key: str) -> Non
             raise RuntimeError("Rodin texture-only job failed")
         if all(s == "Done" for s in statuses):
             return
-
-        if time.monotonic() - start > ENHANCE_TIMEOUT:
-            raise TimeoutError("Rodin texture-only timed out")
 
         await asyncio.sleep(POLL_INTERVAL)
 
@@ -224,10 +224,10 @@ async def _submit_texture_only(
     files: List[Any] = [
         ("model", (model_filename, model_bytes, "model/gltf-binary")),
         ("image", (image_filename, image_bytes, image_mime)),
-        ("prompt", prompt),
-        ("material", "PBR"),
-        ("geometry_file_format", "glb"),
-        ("resolution", TEXTURE_RESOLUTION),
+        ("prompt", (None, prompt)),
+        ("material", (None, "PBR")),
+        ("geometry_file_format", (None, "glb")),
+        ("resolution", (None, TEXTURE_RESOLUTION)),
     ]
     resp = await client.post(
         f"{RODIN_API_BASE}/rodin_texture_only",
@@ -316,6 +316,11 @@ async def _enhance_one(
             target = out_dir / "meshes" / f"{module_id}.glb"
             resp = await client.get(new_url, timeout=300.0, follow_redirects=True)
             resp.raise_for_status()
+            if resp.content[:4] != b"glTF":
+                raise RuntimeError(
+                    f"[Material] {module_id}: GLB 다운로드 검증 실패 — glTF 매직바이트 불일치 "
+                    f"({len(resp.content)} bytes, url={new_url})."
+                )
             target.write_bytes(resp.content)
             _save_asset_url(out_dir / "meshes", module_id, new_url)
 
