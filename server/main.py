@@ -1,8 +1,10 @@
 """FastAPI server wrapping the setlab pipeline for the web UI."""
 
 import asyncio
+import hmac
 import json as _json
 import os
+import re
 import shutil
 import threading
 import uuid
@@ -10,9 +12,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -40,6 +42,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Optional bearer-token auth -------------------------------------------------
+# If SETLAB_API_TOKEN is set, every /api/* call (except static media + /health)
+# must send `Authorization: Bearer <token>`. If unset, auth is disabled (local dev).
+_AUTH_OPEN_PREFIXES = ("/health", "/api/outputs/", "/api/web-refs/")
+
+
+@app.middleware("http")
+async def _require_api_token(request: Request, call_next):
+    token = os.environ.get("SETLAB_API_TOKEN", "").strip()
+    if token and request.method != "OPTIONS":
+        path = request.url.path
+        if path.startswith("/api") and not any(path.startswith(p) for p in _AUTH_OPEN_PREFIXES):
+            sent = request.headers.get("authorization", "")
+            if not hmac.compare_digest(sent, f"Bearer {token}"):
+                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
+
 
 @app.get("/health")
 def health():
@@ -63,6 +82,15 @@ class EnhancePromptRequest(BaseModel):
 
     prompt: str
     model: str = "claude-sonnet-4-6"
+    reference_image_paths: Optional[List[str]] = None
+
+
+class SearchImagesRequest(BaseModel):
+    """Search DuckDuckGo for images matching the given query or prompt."""
+
+    prompt: str = ""
+    query: str = ""
+    max_images: int = Field(default=10, ge=1, le=30)
 
 
 class DeployRequest(BaseModel):
@@ -139,26 +167,107 @@ def api_generate(req: GenerateRequest):
 
 @app.post("/api/enhance-prompt")
 def api_enhance_prompt(req: EnhancePromptRequest):
-    """Rewrite a rough idea into a detailed English brief for the layout generator (Claude)."""
+    """Stream the enhanced scene brief as SSE text/event-stream.
+
+    If the prompt contains web search intent ("search the web for images", etc.),
+    also searches DuckDuckGo for reference images and emits them as SSE events
+    so the frontend can pass them to HD mesh generation.
+    """
     if not req.prompt.strip():
         raise HTTPException(status_code=422, detail="prompt is empty")
 
+    from setlab import claude_client
+    from setlab.web_image_search import has_search_intent, extract_search_query, search_and_download
+    import json as _json_mod
+
+    prompt = req.prompt.strip()
+
+    def generate():
+        reference_images: list = []
+
+        if req.reference_image_paths is not None:
+            # Explicit paths supplied by the client (post-selection); skip auto-search
+            reference_images = [p for p in req.reference_image_paths if Path(p).is_file()]
+        else:
+            # Auto-detect search intent and fetch images first
+            if has_search_intent(prompt):
+                query = extract_search_query(prompt)
+                yield f"event: search_start\ndata: {query}\n\n"
+                try:
+                    refs_dir = OUT_ROOT / "_web_refs" / re.sub(r"[^\w\s-]", "", query)[:60].strip()
+                    paths = search_and_download(query, refs_dir, max_images=10)
+                    reference_images = [str(p) for p in paths]
+                    rel_paths = [str(p.relative_to(OUT_ROOT)) for p in paths]
+                    yield f"event: search_done\ndata: {_json_mod.dumps({'query': query, 'images': rel_paths, 'refs_dir': str(refs_dir)})}\n\n"
+                except Exception as e:
+                    yield f"event: search_error\ndata: {str(e)}\n\n"
+
+        try:
+            for chunk in claude_client.enhance_prompt_stream(
+                prompt,
+                model=req.model,
+                reference_images=reference_images or None,
+            ):
+                yield f"data: {_json_mod.dumps(chunk)}\n\n"
+        except (ValueError, RuntimeError) as e:
+            yield f"event: error\ndata: {_json_mod.dumps(str(e))}\n\n"
+
+        yield "event: done\ndata: \n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.post("/api/search-images")
+def api_search_images(req: SearchImagesRequest):
+    """Search DuckDuckGo and download images. Returns list of image URLs + server paths."""
+    from setlab.web_image_search import has_search_intent, extract_search_query, extract_image_count, search_and_download
+
+    source_text = req.prompt.strip() or req.query.strip()
+    if req.query.strip():
+        query = req.query.strip()
+    elif req.prompt.strip() and has_search_intent(req.prompt.strip()):
+        query = extract_search_query(req.prompt.strip())
+    else:
+        return {"detected": False, "query": "", "images": [], "refs_dir": ""}
+
+    # Honor count specified in the prompt (e.g. "at least 10", "10장")
+    extracted_count = extract_image_count(source_text)
+    max_images = min(extracted_count or req.max_images, 30)
+
+    slug = re.sub(r"[^\w\s-]", "", query)[:60].strip()
+    refs_dir = OUT_ROOT / "_web_refs" / slug
     try:
-        from setlab import claude_client
+        paths = search_and_download(query, refs_dir, max_images=max_images)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        enhanced = claude_client.enhance_prompt_raw(
-            req.prompt.strip(), model=req.model
-        )
-    except (ValueError, RuntimeError) as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    images = [
+        {
+            "url": f"/api/web-refs/{p.relative_to(OUT_ROOT)}",
+            "path": str(p),
+        }
+        for p in paths
+    ]
+    return {"detected": True, "query": query, "images": images, "refs_dir": str(refs_dir)}
 
-    return {"enhanced": enhanced}
+
+@app.get("/api/web-refs/{filepath:path}")
+def api_web_ref_image(filepath: str):
+    """Serve downloaded web reference images."""
+    base = OUT_ROOT.resolve()
+    file_path = (OUT_ROOT / filepath).resolve()
+    if not file_path.is_relative_to(base) or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+    ext = file_path.suffix.lower()
+    media = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(ext, "image/jpeg")
+    return FileResponse(file_path, media_type=media)
 
 
 @app.get("/api/outputs/{run_id}/{filename:path}")
 def api_output_file(run_id: str, filename: str):
-    file_path = OUT_ROOT / run_id / filename
-    if not file_path.exists() or not file_path.is_file():
+    base = OUT_ROOT.resolve()
+    file_path = (OUT_ROOT / run_id / filename).resolve()
+    if not file_path.is_relative_to(base) or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     media_types = {".gltf": "model/gltf+json", ".glb": "model/gltf-binary", ".json": "application/json"}
     ext = Path(filename).suffix
@@ -193,7 +302,9 @@ def api_refine(req: RefineRequest):
     from setlab.export_usda import spec_to_usda
 
     try:
-        spec = SetSpec.model_validate(raw)
+        # Merge over the existing spec so untouched top-level fields
+        # (ground_material, environment) are preserved; LLM-returned keys win.
+        spec = SetSpec.model_validate({**existing_spec, **raw})
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Validation failed: {e}")
 
@@ -508,6 +619,11 @@ def api_deploy(run_id: str, vr: bool = False, req: Optional[DeployRequest] = Non
     ue_project = (req and req.ue_project) or os.environ.get("UE_PROJECT")
     if not ue_project:
         raise HTTPException(status_code=400, detail="UE_PROJECT not configured")
+    if not Path(ue_project).is_dir() or not any(Path(ue_project).glob("*.uproject")):
+        raise HTTPException(
+            status_code=400,
+            detail="ue_project is not a valid Unreal project directory (no .uproject)",
+        )
 
     dest = Path(ue_project) / "Content" / "Incoming"
     dest.mkdir(parents=True, exist_ok=True)
@@ -616,21 +732,27 @@ class ConfigUpdate(BaseModel):
 def api_config_update(req: ConfigUpdate):
     if req.ue_project is not None:
         path = Path(req.ue_project)
-        if not path.is_dir():
-            raise HTTPException(status_code=400, detail=f"Directory not found: {req.ue_project}")
-        os.environ["UE_PROJECT"] = req.ue_project
+        if not path.is_dir() or not any(path.glob("*.uproject")):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not a valid Unreal project directory (no .uproject): {req.ue_project}",
+            )
 
         env_file = ROOT / ".env"
-        lines = env_file.read_text().splitlines() if env_file.exists() else []
-        updated = False
-        for i, line in enumerate(lines):
-            if line.strip().startswith("UE_PROJECT=") or line.strip().startswith("# UE_PROJECT="):
-                lines[i] = f"UE_PROJECT={req.ue_project}"
-                updated = True
-                break
-        if not updated:
-            lines.append(f"UE_PROJECT={req.ue_project}")
-        env_file.write_text("\n".join(lines) + "\n")
+        try:
+            lines = env_file.read_text().splitlines() if env_file.exists() else []
+            updated = False
+            for i, line in enumerate(lines):
+                if line.strip().startswith("UE_PROJECT=") or line.strip().startswith("# UE_PROJECT="):
+                    lines[i] = f'UE_PROJECT="{req.ue_project}"'
+                    updated = True
+                    break
+            if not updated:
+                lines.append(f'UE_PROJECT="{req.ue_project}"')
+            env_file.write_text("\n".join(lines) + "\n")
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to persist .env: {e}")
+        os.environ["UE_PROJECT"] = req.ue_project
 
     return {"ue_project": os.environ.get("UE_PROJECT", "")}
 
@@ -638,6 +760,11 @@ def api_config_update(req: ConfigUpdate):
 # ---------------------------------------------------------------------------
 # Mesh generation (Hyper3D Rodin Gen-2)
 # ---------------------------------------------------------------------------
+
+# One lock guards all background-job dicts so the "already running? -> reuse : start"
+# check-then-store is atomic; two concurrent requests can no longer spawn duplicate
+# pipelines writing the same files for one run_id.
+_jobs_lock = threading.Lock()
 
 _meshgen_jobs: Dict[str, dict] = {}
 
@@ -815,7 +942,11 @@ def api_meshgen_start(
         "done": done_for_job,
         "modules": mod_status,
     }
-    _meshgen_jobs[run_id] = job
+    with _jobs_lock:
+        existing = _meshgen_jobs.get(run_id)
+        if existing and existing.get("status") == "running":
+            return existing
+        _meshgen_jobs[run_id] = job
 
     t = threading.Thread(
         target=_run_meshgen_thread,
@@ -874,15 +1005,23 @@ def _run_hdgen_thread(run_id: str, modules: list, out_dir: Path):
     try:
         job["phase"] = "images"
         from setlab.image_gen import generate_all_module_images
-        generate_all_module_images(modules, out_dir, on_progress=on_img_progress)
+        # Use web reference images if they exist (downloaded via enhance + web search)
+        web_refs = next(iter(sorted((OUT_ROOT / "_web_refs").glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)), None) if (OUT_ROOT / "_web_refs").exists() else None
+        img_results = generate_all_module_images(modules, out_dir, on_progress=on_img_progress, web_refs_dir=web_refs)
+        if isinstance(img_results, dict) and not any(img_results.values()):
+            raise RuntimeError(
+                "참조 이미지 생성 결과가 비어 있습니다 (모든 모듈 0뷰). FLUX/이미지 백엔드 키·설정을 확인하세요."
+            )
 
         job["phase"] = "3d"
         loop = asyncio.new_event_loop()
         try:
             from setlab.rodin_client import generate_hd_meshes
-            loop.run_until_complete(generate_hd_meshes(modules, out_dir, on_progress=on_3d_progress))
+            mesh_results = loop.run_until_complete(generate_hd_meshes(modules, out_dir, on_progress=on_3d_progress))
         finally:
             loop.close()
+        if isinstance(mesh_results, dict) and not any(mesh_results.values()):
+            raise RuntimeError("HD 메시 생성 결과가 비어 있습니다 (모든 모듈 실패).")
 
         job["status"] = "completed"
     except Exception as e:
@@ -912,7 +1051,11 @@ def api_hdgen_start(run_id: str):
         "done": 0,
         "modules": {m["id"]: "pending" for m in hd_modules},
     }
-    _hdgen_jobs[run_id] = job
+    with _jobs_lock:
+        existing = _hdgen_jobs.get(run_id)
+        if existing and existing.get("status") == "running":
+            return existing
+        _hdgen_jobs[run_id] = job
 
     t = threading.Thread(
         target=_run_hdgen_thread,
@@ -991,7 +1134,11 @@ def api_envgen_start(run_id: str):
         "phase": "submitting",
         "progress": 0,
     }
-    _envgen_jobs[run_id] = job
+    with _jobs_lock:
+        existing = _envgen_jobs.get(run_id)
+        if existing and existing.get("status") == "running":
+            return existing
+        _envgen_jobs[run_id] = job
 
     t = threading.Thread(
         target=_run_envgen_thread,
@@ -1082,7 +1229,11 @@ def api_material_enhance_start(
         "done": 0,
         "modules": {m["id"]: "pending" for m in modules},
     }
-    _matenhance_jobs[run_id] = job
+    with _jobs_lock:
+        existing = _matenhance_jobs.get(run_id)
+        if existing and existing.get("status") == "running":
+            return existing
+        _matenhance_jobs[run_id] = job
 
     t = threading.Thread(
         target=_run_matenhance_thread,
@@ -1167,24 +1318,26 @@ def api_modify(run_id: str, req: ModifyRequest):
             modules_to_enhance = [
                 m for m in spec.get("modules", []) if m["id"] in module_ids
             ]
-            if modules_to_enhance and (
-                run_id not in _matenhance_jobs
-                or _matenhance_jobs[run_id].get("status") != "running"
-            ):
+            if modules_to_enhance:
                 first_prompt = next(iter(retexture.values()), None)
-                job: dict = {
-                    "status": "running",
-                    "total": len(modules_to_enhance),
-                    "done": 0,
-                    "modules": {m["id"]: "pending" for m in modules_to_enhance},
-                }
-                _matenhance_jobs[run_id] = job
-                t = threading.Thread(
-                    target=_run_matenhance_thread,
-                    args=(run_id, modules_to_enhance, OUT_ROOT / run_id, "generic_weathered", first_prompt),
-                    daemon=True,
-                )
-                t.start()
+                spawn = False
+                with _jobs_lock:
+                    existing = _matenhance_jobs.get(run_id)
+                    if not (existing and existing.get("status") == "running"):
+                        _matenhance_jobs[run_id] = {
+                            "status": "running",
+                            "total": len(modules_to_enhance),
+                            "done": 0,
+                            "modules": {m["id"]: "pending" for m in modules_to_enhance},
+                        }
+                        spawn = True
+                if spawn:
+                    t = threading.Thread(
+                        target=_run_matenhance_thread,
+                        args=(run_id, modules_to_enhance, OUT_ROOT / run_id, "generic_weathered", first_prompt),
+                        daemon=True,
+                    )
+                    t.start()
 
     elif tier == "moderate":
         regenerate = commands.get("regenerate", {})
@@ -1202,26 +1355,29 @@ def api_modify(run_id: str, req: ModifyRequest):
             spec_file.write_text(_json.dumps(spec, indent=2, ensure_ascii=False))
 
             module_ids = list(regenerate.keys())
-            if module_ids and (
-                run_id not in _meshgen_jobs or _meshgen_jobs[run_id].get("status") != "running"
-            ):
+            if module_ids:
                 modules_to_gen = [m for m in modules if m["id"] in module_ids]
                 mod_status = {}
                 for m in modules:
                     mod_status[m["id"]] = "pending" if m["id"] in module_ids else "done"
-                gen_job: dict = {
-                    "status": "running",
-                    "total": len(modules),
-                    "done": sum(1 for s in mod_status.values() if s == "done"),
-                    "modules": mod_status,
-                }
-                _meshgen_jobs[run_id] = gen_job
-                t = threading.Thread(
-                    target=_run_meshgen_thread,
-                    args=(run_id, modules_to_gen, OUT_ROOT / run_id),
-                    daemon=True,
-                )
-                t.start()
+                spawn = False
+                with _jobs_lock:
+                    existing = _meshgen_jobs.get(run_id)
+                    if not (existing and existing.get("status") == "running"):
+                        _meshgen_jobs[run_id] = {
+                            "status": "running",
+                            "total": len(modules),
+                            "done": sum(1 for s in mod_status.values() if s == "done"),
+                            "modules": mod_status,
+                        }
+                        spawn = True
+                if spawn:
+                    t = threading.Thread(
+                        target=_run_meshgen_thread,
+                        args=(run_id, modules_to_gen, OUT_ROOT / run_id),
+                        daemon=True,
+                    )
+                    t.start()
 
     return {
         "tier": tier,
@@ -1233,9 +1389,16 @@ def api_modify(run_id: str, req: ModifyRequest):
 
 @app.get("/api/browse")
 def api_browse(path: str = ""):
-    target = Path(path).expanduser().resolve() if path else Path.home()
+    target = Path(path).expanduser().resolve() if path else Path.home().resolve()
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="Not a directory")
+    # Optional allowlist: if SETLAB_BROWSE_ROOTS is set (os.pathsep-separated),
+    # restrict browsing to those roots. Unset = permissive (local dev default).
+    roots_env = os.environ.get("SETLAB_BROWSE_ROOTS", "").strip()
+    if roots_env:
+        roots = [Path(r).expanduser().resolve() for r in roots_env.split(os.pathsep) if r.strip()]
+        if not any(target == r or target.is_relative_to(r) for r in roots):
+            raise HTTPException(status_code=403, detail="Path outside allowed browse roots")
 
     entries = []
     try:

@@ -68,7 +68,7 @@ def generate_set(
     prompt: str,
     *,
     backend: str = "mock",
-    model: str = "llama3.1:8b",
+    model: str = "qwen2.5-coder:32b",
     ollama_url: str = "http://127.0.0.1:11434",
     out_dir: Union[Path, str] = Path("out/pilot"),
     max_modules: Optional[int] = None,
@@ -144,7 +144,7 @@ def main() -> int:
         if args.backend == "claude":
             model = os.environ.get("MODEL", "claude-sonnet-4-6")
         else:
-            model = os.environ.get("MODEL", "llama3.1:8b")
+            model = os.environ.get("MODEL", "qwen2.5-coder:32b")
 
     try:
         spec, out = generate_set(

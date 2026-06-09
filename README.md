@@ -19,7 +19,7 @@
 ## 설치
 
 ```bash
-cd /Users/jkjung/Desktop/projects/3D-test
+cd /Users/jkjung/projects/setlab
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt

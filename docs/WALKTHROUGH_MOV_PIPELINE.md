@@ -43,7 +43,7 @@
 ### 2A. 이 레포의 파일럿으로 가기 (**AI 기본**)
 
 ```bash
-cd /path/to/3D-test
+cd /path/to/setlab
 ollama pull llama3.2   # 최초 1회
 source .venv/bin/activate
 python -m setlab.run my_brief.txt --out out/ue57_trailer --backend ollama --model llama3.2

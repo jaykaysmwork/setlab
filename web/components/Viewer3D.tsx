@@ -34,21 +34,25 @@ function Model({
   const { scene } = useGLTF(url);
   const { camera, controls } = useThree();
 
+  const meshGlbIds = useMemo(() => new Set(Object.keys(meshGlbs)), [meshGlbs]);
+
+  // Clone only when scene or moduleIds changes — NOT when meshGlbIds changes.
+  // Visibility is updated imperatively below to avoid scene.clone() on every poll tick.
   const cloned = useMemo(() => {
     const c = scene.clone();
-    if (moduleIds.size === 0) return c;
-    c.traverse((child) => {
-      if (!child.name || !moduleIds.has(child.name)) return;
-      const hasGlb = !!meshGlbs[child.name];
-      if (hasGlb) {
-        child.visible = false;
-      } else {
-        child.visible = !meshedOnly;
-      }
-    });
-    tagMeshesWithModuleId(c, moduleIds);
+    if (moduleIds.size > 0) tagMeshesWithModuleId(c, moduleIds);
     return c;
-  }, [scene, meshGlbs, moduleIds, meshedOnly]);
+  }, [scene, moduleIds]);
+
+  // Imperatively update visibility without replacing the object (no flicker).
+  useEffect(() => {
+    if (moduleIds.size === 0) return;
+    cloned.traverse((child) => {
+      if (!child.name || !moduleIds.has(child.name)) return;
+      child.visible = meshGlbIds.has(child.name) ? false : !meshedOnly;
+    });
+    invalidate();
+  }, [cloned, meshGlbIds, moduleIds, meshedOnly]);
 
   useEffect(() => {
     applySelectionPickStyle(cloned, selectedModuleId);

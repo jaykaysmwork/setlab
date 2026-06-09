@@ -24,7 +24,7 @@ ProgressCallback = Callable[[str, str, int], None]
 
 API_BASE = os.environ.get("RODIN_API_BASE", "https://api.hyper3d.com/api/v2")
 MAX_CONCURRENT = int(os.environ.get("RODIN_CONCURRENCY", "10"))
-POLL_INTERVAL = float(os.environ.get("RODIN_POLL_INTERVAL", "5.0"))
+POLL_INTERVAL = float(os.environ.get("RODIN_POLL_INTERVAL", "2.0"))
 GENERATE_TIMEOUT = float(os.environ.get("RODIN_TIMEOUT", "900"))
 
 # Gen-2 defaults (see Hyper3D minimal Gen-2 example)
@@ -171,6 +171,9 @@ async def _poll_until_done(
 
     start = time.monotonic()
     while True:
+        if time.monotonic() - start > timeout:
+            raise TimeoutError(f"Rodin timed out after {timeout:.0f}s")
+
         resp = await client.post(
             f"{API_BASE}/status",
             headers={**_auth_headers(), "Content-Type": "application/json"},
@@ -192,10 +195,6 @@ async def _poll_until_done(
             raise RuntimeError("Rodin generation failed (job status Failed)")
         if all(s == "Done" for s in statuses):
             return
-
-        elapsed = time.monotonic() - start
-        if elapsed > timeout:
-            raise TimeoutError(f"Rodin timed out after {timeout:.0f}s")
 
         await asyncio.sleep(POLL_INTERVAL)
 
@@ -238,10 +237,10 @@ async def _download_glb(client: httpx.AsyncClient, url: str, dest: Path) -> Path
 
 
 def _save_asset_url(meshes_dir: Path, module_id: str, asset_url: str) -> None:
-    urls_file = meshes_dir / "_asset_urls.json"
-    existing = json.loads(urls_file.read_text()) if urls_file.exists() else {}
-    existing[module_id] = asset_url
-    urls_file.write_text(json.dumps(existing, indent=2))
+    # Delegate to the shared, locked, atomic writer (one process-wide lock).
+    from setlab._asset_urls import save_asset_url
+
+    save_asset_url(meshes_dir, module_id, asset_url)
 
 
 async def _generate_one(

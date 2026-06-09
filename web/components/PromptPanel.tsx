@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useCallback, useEffect, type FormEvent } from "react";
-import { enhancePrompt } from "@/lib/api";
+import { useState, useCallback, useEffect, useRef, type FormEvent } from "react";
+import { enhancePrompt, searchImages, type SearchImageItem } from "@/lib/api";
+import ImagePickerPanel from "./ImagePickerPanel";
 
 interface Props {
   onGenerate: (
@@ -21,6 +22,8 @@ interface Props {
   selectedModuleId?: string | null;
 }
 
+type EnhanceStage = "idle" | "searching" | "picking" | "enhancing";
+
 export default function PromptPanel({
   onGenerate,
   onRefine,
@@ -34,18 +37,50 @@ export default function PromptPanel({
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<"generate" | "refine">("generate");
   const [enhancedOnce, setEnhancedOnce] = useState(false);
-  const [isEnhancing, setIsEnhancing] = useState(false);
   const [enhanceError, setEnhanceError] = useState<string | null>(null);
   const [maxModulesInput, setMaxModulesInput] = useState("");
   const [maxModulesError, setMaxModulesError] = useState<string | null>(null);
+  const [loadingStep, setLoadingStep] = useState("");
+  const loadingStepRef = useRef(0);
+
+  // Enhance flow state machine
+  const [enhanceStage, setEnhanceStage] = useState<EnhanceStage>("idle");
+  const [pickerImages, setPickerImages] = useState<SearchImageItem[]>([]);
+  const [pickerQuery, setPickerQuery] = useState("");
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [isSearchingMore, setIsSearchingMore] = useState(false);
+
+  const isEnhancing = enhanceStage === "searching" || enhanceStage === "enhancing";
+
+  useEffect(() => {
+    if (!isLoading) {
+      setLoadingStep("");
+      return;
+    }
+    const steps = [
+      "레이아웃 생성 중…",
+      "모듈 배치 최적화 중…",
+      "glTF 내보내는 중…",
+      "거의 다 됐어요…",
+    ];
+    loadingStepRef.current = 0;
+    setLoadingStep(steps[0]);
+    const id = setInterval(() => {
+      loadingStepRef.current = (loadingStepRef.current + 1) % steps.length;
+      setLoadingStep(steps[loadingStepRef.current]);
+    }, 5000);
+    return () => clearInterval(id);
+  }, [isLoading]);
 
   const isRefineMode = mode === "refine" && hasCurrentSpec;
-  const enhanceModel = backend === "claude" ? model : "claude-sonnet-4-6";
+  const enhanceModel = backend === "claude" ? model : "claude-haiku-4-5-20251001";
 
   useEffect(() => {
     if (mode === "refine") {
       setEnhancedOnce(false);
       setEnhanceError(null);
+      setEnhanceStage("idle");
+      setPickerImages([]);
     }
   }, [mode]);
 
@@ -58,23 +93,109 @@ export default function PromptPanel({
         setPrompt("");
       }
     },
-    [prompt, isLoading, fullPipelineBusy, mode, onRefine]
+    [prompt, isLoading, fullPipelineBusy, mode, onRefine],
+  );
+
+  const doEnhanceStream = useCallback(
+    async (referencePaths: string[]) => {
+      setEnhanceStage("enhancing");
+      setPrompt("");
+      try {
+        await enhancePrompt(
+          prompt.trim(),
+          enhanceModel,
+          (chunk) => setPrompt((prev) => prev + chunk),
+          undefined,
+          undefined,
+          referencePaths,
+        );
+        setEnhancedOnce(true);
+      } catch (e) {
+        setEnhanceError(e instanceof Error ? e.message : "Enhance failed");
+      } finally {
+        setEnhanceStage("idle");
+        setPickerImages([]);
+        setSelectedPaths(new Set());
+        setPickerQuery("");
+      }
+    },
+    [prompt, enhanceModel],
   );
 
   const handleEnhance = useCallback(async () => {
     if (!prompt.trim() || isEnhancing) return;
     setEnhanceError(null);
-    setIsEnhancing(true);
+
+    // First check for search intent + fetch images
+    setEnhanceStage("searching");
     try {
-      const { enhanced } = await enhancePrompt(prompt.trim(), enhanceModel);
-      setPrompt(enhanced);
-      setEnhancedOnce(true);
+      const result = await searchImages({ prompt: prompt.trim() });
+      if (result.detected && result.images.length > 0) {
+        setPickerImages(result.images);
+        setPickerQuery(result.query);
+        setSelectedPaths(new Set(result.images.map((i) => i.path)));
+        setEnhanceStage("picking");
+      } else {
+        // No search intent — enhance directly without images
+        await doEnhanceStream([]);
+      }
     } catch (e) {
-      setEnhanceError(e instanceof Error ? e.message : "Enhance failed");
-    } finally {
-      setIsEnhancing(false);
+      setEnhanceError(e instanceof Error ? e.message : "검색 실패");
+      setEnhanceStage("idle");
     }
-  }, [prompt, isEnhancing, enhanceModel]);
+  }, [prompt, isEnhancing, doEnhanceStream]);
+
+  const handlePickerConfirm = useCallback(async () => {
+    await doEnhanceStream(Array.from(selectedPaths));
+  }, [doEnhanceStream, selectedPaths]);
+
+  const handlePickerSkip = useCallback(async () => {
+    await doEnhanceStream([]);
+  }, [doEnhanceStream]);
+
+  const handleSearchMore = useCallback(
+    async (query: string) => {
+      setIsSearchingMore(true);
+      try {
+        const combined = pickerQuery ? `${pickerQuery} ${query}` : query;
+        const result = await searchImages({ query: combined, maxImages: 10 });
+        if (result.images.length > 0) {
+          setPickerImages((prev) => {
+            const existingPaths = new Set(prev.map((i) => i.path));
+            const fresh = result.images.filter((i) => !existingPaths.has(i.path));
+            return [...prev, ...fresh];
+          });
+          setSelectedPaths((prev) => {
+            const next = new Set(prev);
+            result.images.forEach((i) => next.add(i.path));
+            return next;
+          });
+        }
+      } catch {
+        /* silently ignore */
+      } finally {
+        setIsSearchingMore(false);
+      }
+    },
+    [pickerQuery],
+  );
+
+  const handleToggle = useCallback((path: string) => {
+    setSelectedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const handleSelectAll = useCallback(() => {
+    setSelectedPaths(new Set(pickerImages.map((i) => i.path)));
+  }, [pickerImages]);
+
+  const handleDeselectAll = useCallback(() => {
+    setSelectedPaths(new Set());
+  }, []);
 
   const handleGenerateClick = useCallback(async () => {
     if (!prompt.trim() || isLoading || fullPipelineBusy) return;
@@ -97,15 +218,7 @@ export default function PromptPanel({
     } catch {
       /* parent sets error */
     }
-  }, [
-    prompt,
-    isLoading,
-    fullPipelineBusy,
-    onGenerate,
-    backend,
-    model,
-    maxModulesInput,
-  ]);
+  }, [prompt, isLoading, fullPipelineBusy, onGenerate, backend, model, maxModulesInput]);
 
   const busy = isLoading || isEnhancing || fullPipelineBusy;
   const generateSpinner = isLoading || fullPipelineBusy;
@@ -174,26 +287,19 @@ export default function PromptPanel({
                 disabled={busy || !prompt.trim()}
                 className="min-h-[2.5rem] px-3 py-2 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-xs font-medium transition-colors bg-violet-600 hover:bg-violet-500 text-white"
               >
-                {isEnhancing ? (
+                {enhanceStage === "searching" ? (
                   <span className="flex items-center justify-center gap-1.5">
-                    <svg
-                      className="animate-spin h-3.5 w-3.5 shrink-0"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle
-                        className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                        fill="none"
-                      />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                      />
+                    <svg className="animate-spin h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    검색 중…
+                  </span>
+                ) : enhanceStage === "enhancing" ? (
+                  <span className="flex items-center justify-center gap-1.5">
+                    <svg className="animate-spin h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
                     Enhancing…
                   </span>
@@ -211,28 +317,13 @@ export default function PromptPanel({
               >
                 {generateSpinner ? (
                   <span className="flex items-center justify-center gap-1.5">
-                    <svg
-                      className="animate-spin h-4 w-4 shrink-0"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle
-                        className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                        fill="none"
-                      />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                      />
+                    <svg className="animate-spin h-4 w-4 shrink-0" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
                     {fullPipelineBusy && !isLoading
                       ? "파이프라인…"
-                      : "Generating…"}
+                      : loadingStep || "Generating…"}
                   </span>
                 ) : (
                   "Generate"
@@ -240,10 +331,26 @@ export default function PromptPanel({
               </button>
             </div>
           </div>
+
+          {/* Image picker panel — shown after search results arrive */}
+          {enhanceStage === "picking" && (
+            <ImagePickerPanel
+              images={pickerImages}
+              selectedPaths={selectedPaths}
+              query={pickerQuery}
+              isSearchingMore={isSearchingMore}
+              onToggle={handleToggle}
+              onSelectAll={handleSelectAll}
+              onDeselectAll={handleDeselectAll}
+              onSearchMore={handleSearchMore}
+              onConfirm={handlePickerConfirm}
+              onSkip={handlePickerSkip}
+            />
+          )}
+
           {backend !== "claude" && (
             <p className="text-[10px] text-[#666] px-0.5">
-              Enhance uses Claude (claude-sonnet-4-6); generation still uses your
-              selected backend.
+              Enhance uses Claude (claude-sonnet-4-6); generation still uses your selected backend.
             </p>
           )}
           {enhanceError && (
@@ -308,20 +415,8 @@ export default function PromptPanel({
             {isLoading ? (
               <span className="flex items-center gap-2">
                 <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                    fill="none"
-                  />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                  />
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
                 Refining…
               </span>

@@ -128,6 +128,7 @@ export function ImportedMeshModule({
     invalidate();
 
     return () => {
+      useGLTF.clear(url);
       if (!innerRef.current) return;
       while (innerRef.current.children.length) {
         const ch = innerRef.current.children[0];

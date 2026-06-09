@@ -31,7 +31,7 @@
 ### 3) 이 레포 — 브리프 + 생성
 
 ```bash
-cd /path/to/3D-test
+cd /path/to/setlab
 source .venv/bin/activate
 python -m setlab.run my_brief.txt --out out/clean_run --backend ollama --model llama3.2
 ```

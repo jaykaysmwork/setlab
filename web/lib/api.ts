@@ -1,12 +1,25 @@
-/** API origin (no trailing slash). Browser: uses NEXT_PUBLIC_API_URL or origin+basePath. SSR/build: localhost default. */
+/**
+ * API origin (no trailing slash).
+ * - NEXT_PUBLIC_API_URL: explicit (any host/port).
+ * - Browser + NEXT_PUBLIC_BASE_PATH (e.g. /setlab): same origin + basePath (nginx/static export).
+ * - Browser + no basePath: same origin — Next.js rewrites proxy /api/* to FastAPI.
+ * - SSR: localhost:8000.
+ */
 export function apiBase(): string {
   const fromEnv = process.env.NEXT_PUBLIC_API_URL?.trim();
   if (fromEnv) return fromEnv.replace(/\/$/, "");
   if (typeof window !== "undefined") {
     const bp = (process.env.NEXT_PUBLIC_BASE_PATH || "").trim();
-    return `${window.location.origin}${bp}`;
+    if (bp) return `${window.location.origin}${bp}`;
+    // Same origin — Next.js rewrites in next.config.ts proxy /api/* to FastAPI.
+    return "";
   }
-  return "http://localhost:8000";
+  return "http://127.0.0.1:8000";
+}
+
+const API_TOKEN = process.env.NEXT_PUBLIC_SETLAB_API_TOKEN ?? "";
+export function authHeaders(): Record<string, string> {
+  return API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {};
 }
 
 export interface ModulePlacement {
@@ -73,26 +86,110 @@ export interface AppConfig {
   default_backend: string;
 }
 
+export interface EnhanceResult {
+  enhanced: string;
+  webRefs?: { query: string; images: string[]; refs_dir: string };
+}
+
+export interface SearchImageItem {
+  url: string;   // frontend URL: /api/web-refs/...
+  path: string;  // absolute server path for enhance request
+}
+
+export interface SearchImagesResult {
+  detected: boolean;
+  query: string;
+  images: SearchImageItem[];
+  refs_dir: string;
+}
+
+export async function searchImages(
+  opts: { prompt?: string; query?: string; maxImages?: number },
+): Promise<SearchImagesResult> {
+  const res = await fetch(`${apiBase()}/api/search-images`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({
+      prompt: opts.prompt ?? "",
+      query: opts.query ?? "",
+      max_images: opts.maxImages ?? 10,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail ?? "Image search failed");
+  }
+  return res.json();
+}
+
 export async function enhancePrompt(
   prompt: string,
-  model = "claude-sonnet-4-6",
-): Promise<{ enhanced: string }> {
+  model = "claude-haiku-4-5-20251001",
+  onChunk?: (chunk: string) => void,
+  onSearchStart?: (query: string) => void,
+  onSearchDone?: (refs: EnhanceResult["webRefs"]) => void,
+  referencePaths?: string[],
+): Promise<EnhanceResult> {
+  const body: Record<string, unknown> = { prompt, model };
+  if (referencePaths !== undefined) body.reference_image_paths = referencePaths;
   const res = await fetch(`${apiBase()}/api/enhance-prompt`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, model }),
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Enhance prompt failed");
   }
-  return res.json();
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let enhanced = "";
+  let buf = "";
+  let webRefs: EnhanceResult["webRefs"] | undefined;
+  let currentEvent = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        currentEvent = line.slice(7).trim();
+        continue;
+      }
+      if (line.startsWith("data: ")) {
+        const payload = line.slice(6);
+        if (currentEvent === "search_start") {
+          onSearchStart?.(payload);
+        } else if (currentEvent === "search_done") {
+          try {
+            webRefs = JSON.parse(payload);
+            onSearchDone?.(webRefs);
+          } catch { /* ignore parse errors */ }
+        } else if (currentEvent === "" || currentEvent === "message") {
+          // Server JSON-encodes text chunks so embedded newlines survive SSE framing.
+          let text = payload;
+          try {
+            text = JSON.parse(payload);
+          } catch { /* fall back to raw payload */ }
+          enhanced += text;
+          onChunk?.(text);
+        }
+        currentEvent = "";
+      }
+    }
+  }
+
+  return { enhanced, webRefs };
 }
 
 export async function generate(
   prompt: string,
   backend = "mock",
-  model = "llama3.2",
+  model = "qwen2.5-coder:32b",
   maxModules?: number,
 ): Promise<GenerateResult> {
   const body: Record<string, unknown> = { prompt, backend, model };
@@ -106,7 +203,7 @@ export async function generate(
   }
   const res = await fetch(`${apiBase()}/api/generate`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -139,7 +236,7 @@ export async function deploy(
   }
   const res = await fetch(`${apiBase()}/api/deploy/${runId}${params}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -150,14 +247,14 @@ export async function deploy(
 }
 
 export async function fetchHistory(): Promise<HistoryItem[]> {
-  const res = await fetch(`${apiBase()}/api/history`);
+  const res = await fetch(`${apiBase()}/api/history`, { headers: { ...authHeaders() } });
   if (!res.ok) return [];
   const data = await res.json();
   return data.items ?? [];
 }
 
 export async function fetchConfig(): Promise<AppConfig> {
-  const res = await fetch(`${apiBase()}/api/config`);
+  const res = await fetch(`${apiBase()}/api/config`, { headers: { ...authHeaders() } });
   return res.json();
 }
 
@@ -166,7 +263,7 @@ export async function updateConfig(
 ): Promise<{ ue_project: string }> {
   const res = await fetch(`${apiBase()}/api/config`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ ue_project: ueProject }),
   });
   if (!res.ok) {
@@ -184,7 +281,7 @@ export async function refine(
 ): Promise<GenerateResult> {
   const res = await fetch(`${apiBase()}/api/refine`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ run_id: runId, instruction, backend, model }),
   });
   if (!res.ok) {
@@ -203,7 +300,7 @@ export async function refineModule(
 ): Promise<GenerateResult> {
   const res = await fetch(`${apiBase()}/api/refine-module`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({
       run_id: runId,
       module_id: moduleId,
@@ -233,7 +330,7 @@ export async function startMeshGen(
       : {};
   const res = await fetch(`${apiBase()}/api/meshgen/${runId}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -244,7 +341,7 @@ export async function startMeshGen(
 }
 
 export async function pollMeshStatus(runId: string): Promise<MeshGenStatus> {
-  const res = await fetch(`${apiBase()}/api/meshgen/${runId}/status`);
+  const res = await fetch(`${apiBase()}/api/meshgen/${runId}/status`, { headers: { ...authHeaders() } });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Failed to poll mesh status");
@@ -266,7 +363,7 @@ export interface HdGenStatus {
 }
 
 export async function startHdGen(runId: string): Promise<HdGenStatus> {
-  const res = await fetch(`${apiBase()}/api/hdgen/${runId}`, { method: "POST" });
+  const res = await fetch(`${apiBase()}/api/hdgen/${runId}`, { method: "POST", headers: { ...authHeaders() } });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "HD generation failed to start");
@@ -275,7 +372,7 @@ export async function startHdGen(runId: string): Promise<HdGenStatus> {
 }
 
 export async function pollHdStatus(runId: string): Promise<HdGenStatus> {
-  const res = await fetch(`${apiBase()}/api/hdgen/${runId}/status`);
+  const res = await fetch(`${apiBase()}/api/hdgen/${runId}/status`, { headers: { ...authHeaders() } });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Failed to poll HD status");
@@ -296,7 +393,7 @@ export interface EnvGenStatus {
 }
 
 export async function startEnvGen(runId: string): Promise<EnvGenStatus> {
-  const res = await fetch(`${apiBase()}/api/envgen/${runId}`, { method: "POST" });
+  const res = await fetch(`${apiBase()}/api/envgen/${runId}`, { method: "POST", headers: { ...authHeaders() } });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Marble environment generation failed to start");
@@ -305,7 +402,7 @@ export async function startEnvGen(runId: string): Promise<EnvGenStatus> {
 }
 
 export async function pollEnvGenStatus(runId: string): Promise<EnvGenStatus> {
-  const res = await fetch(`${apiBase()}/api/envgen/${runId}/status`);
+  const res = await fetch(`${apiBase()}/api/envgen/${runId}/status`, { headers: { ...authHeaders() } });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Failed to poll envgen status");
@@ -321,7 +418,7 @@ export async function copyMeshGlb(
 ): Promise<{ ok: boolean; run_id: string; from_module_id: string; to_module_id: string }> {
   const res = await fetch(`${apiBase()}/api/copy-mesh-glb/${runId}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({
       from_module_id: fromModuleId,
       to_module_id: toModuleId,
@@ -335,7 +432,7 @@ export async function copyMeshGlb(
 }
 
 export async function orientBuildingsToRoad(runId: string): Promise<GenerateResult> {
-  const res = await fetch(`${apiBase()}/api/orient-buildings/${runId}`, { method: "POST" });
+  const res = await fetch(`${apiBase()}/api/orient-buildings/${runId}`, { method: "POST", headers: { ...authHeaders() } });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Orient buildings failed");
@@ -364,7 +461,7 @@ export async function startMaterialEnhance(
   if (opts?.customPrompt) body.custom_prompt = opts.customPrompt;
   const res = await fetch(`${apiBase()}/api/material-enhance/${runId}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -377,7 +474,7 @@ export async function startMaterialEnhance(
 export async function pollMaterialEnhanceStatus(
   runId: string,
 ): Promise<MaterialEnhanceStatus> {
-  const res = await fetch(`${apiBase()}/api/material-enhance/${runId}/status`);
+  const res = await fetch(`${apiBase()}/api/material-enhance/${runId}/status`, { headers: { ...authHeaders() } });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? "Failed to poll material enhancement status");
@@ -402,7 +499,7 @@ export async function sendModification(
 ): Promise<ModifyResult> {
   const res = await fetch(`${apiBase()}/api/modify/${runId}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ instruction }),
   });
   if (!res.ok) {
@@ -422,7 +519,7 @@ export async function saveViewerEdits(
   };
   const res = await fetch(`${apiBase()}/api/save-edits/${runId}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) {

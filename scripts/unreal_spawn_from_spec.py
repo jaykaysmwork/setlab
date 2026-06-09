@@ -15,7 +15,7 @@ import unreal
 # --- configure ---
 SPEC_PATH = os.path.join(unreal.Paths.project_saved_dir(), "set_spec.json")
 # Example if you paste the file next to Saved:
-# SPEC_PATH = r"/Users/you/3D-test/out/원하는폴더/set_spec.json"
+# SPEC_PATH = r"/Users/you/setlab/out/원하는폴더/set_spec.json"
 
 # Keys must match SetSpec "asset" strings. Values = /Game/... full reference to StaticMesh.
 ASSET_MAP = {
