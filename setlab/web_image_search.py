@@ -8,6 +8,7 @@ and stores them so HD mesh generation uses them instead of AI-generated images.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -132,7 +133,70 @@ def extract_search_query(prompt: str) -> str:
 
 
 def search_images(query: str, max_results: int = 10) -> List[str]:
-    """Search DuckDuckGo for image URLs matching the query."""
+    """Search for image URLs matching the query.
+
+    Backend is selected by ``IMAGE_SEARCH_BACKEND`` (default ``duckduckgo``):
+    - ``google`` — Google Custom Search JSON API (needs ``GOOGLE_SEARCH_API_KEY``
+      + ``GOOGLE_SEARCH_CX``); falls back to DuckDuckGo if unconfigured or empty.
+    - anything else — DuckDuckGo (keyless, free).
+    """
+    backend = os.environ.get("IMAGE_SEARCH_BACKEND", "duckduckgo").strip().lower()
+    if backend in ("google", "google_image", "cse"):
+        urls = _search_images_google(query, max_results)
+        if urls:
+            return urls
+        logger.warning("[WebSearch] Google search returned nothing — falling back to DuckDuckGo")
+    return _search_images_ddg(query, max_results)
+
+
+def _search_images_google(query: str, max_results: int = 10) -> List[str]:
+    """Google Custom Search JSON API (image search). Returns image URLs."""
+    key = os.environ.get("GOOGLE_SEARCH_API_KEY", "").strip()
+    cx = os.environ.get("GOOGLE_SEARCH_CX", "").strip()
+    if not key or not cx:
+        logger.warning(
+            "[WebSearch] IMAGE_SEARCH_BACKEND=google but GOOGLE_SEARCH_API_KEY / "
+            "GOOGLE_SEARCH_CX is not set"
+        )
+        return []
+    urls: List[str] = []
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            start = 1
+            # Custom Search returns <=10 results/request; paginate via `start`
+            # (the API exposes up to 100 results total, i.e. start <= 91).
+            while len(urls) < max_results and start <= 91:
+                num = min(10, max_results - len(urls))
+                resp = client.get(
+                    "https://www.googleapis.com/customsearch/v1",
+                    params={
+                        "key": key,
+                        "cx": cx,
+                        "q": query,
+                        "searchType": "image",
+                        "num": num,
+                        "start": start,
+                        "safe": "active",
+                    },
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        "[WebSearch] Google Custom Search HTTP %d: %s",
+                        resp.status_code, resp.text[:200],
+                    )
+                    break
+                items = resp.json().get("items") or []
+                if not items:
+                    break
+                urls.extend(it["link"] for it in items if it.get("link"))
+                start += len(items)
+    except Exception as e:
+        logger.warning("[WebSearch] Google Custom Search failed: %s", e)
+    return urls[:max_results]
+
+
+def _search_images_ddg(query: str, max_results: int = 10) -> List[str]:
+    """Search DuckDuckGo for image URLs matching the query (keyless)."""
     from ddgs import DDGS
 
     last_err: Exception | None = None
