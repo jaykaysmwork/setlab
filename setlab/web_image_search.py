@@ -136,17 +136,49 @@ def search_images(query: str, max_results: int = 10) -> List[str]:
     """Search for image URLs matching the query.
 
     Backend is selected by ``IMAGE_SEARCH_BACKEND`` (default ``duckduckgo``):
-    - ``google`` — Google Custom Search JSON API (needs ``GOOGLE_SEARCH_API_KEY``
-      + ``GOOGLE_SEARCH_CX``); falls back to DuckDuckGo if unconfigured or empty.
+    - ``serper`` — Serper.dev Google Images API (needs ``SERPER_API_KEY``). Managed,
+      reliable; recommended.
+    - ``google`` — Google Custom Search JSON API (needs ``GOOGLE_SEARCH_API_KEY`` +
+      ``GOOGLE_SEARCH_CX``). NOTE: closed to new Google customers since 2025.
     - anything else — DuckDuckGo (keyless, free).
+    Any configured backend falls back to DuckDuckGo when it returns nothing.
     """
     backend = os.environ.get("IMAGE_SEARCH_BACKEND", "duckduckgo").strip().lower()
-    if backend in ("google", "google_image", "cse"):
+    if backend == "serper":
+        urls = _search_images_serper(query, max_results)
+        if urls:
+            return urls
+        logger.warning("[WebSearch] Serper returned nothing — falling back to DuckDuckGo")
+    elif backend in ("google", "google_image", "cse"):
         urls = _search_images_google(query, max_results)
         if urls:
             return urls
         logger.warning("[WebSearch] Google search returned nothing — falling back to DuckDuckGo")
     return _search_images_ddg(query, max_results)
+
+
+def _search_images_serper(query: str, max_results: int = 10) -> List[str]:
+    """Google Images via Serper.dev (managed API). Returns full-res image URLs."""
+    key = os.environ.get("SERPER_API_KEY", "").strip()
+    if not key:
+        logger.warning("[WebSearch] IMAGE_SEARCH_BACKEND=serper but SERPER_API_KEY is not set")
+        return []
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(
+                "https://google.serper.dev/images",
+                headers={"X-API-KEY": key, "Content-Type": "application/json"},
+                json={"q": query, "num": max(max_results, 10)},
+            )
+            if resp.status_code != 200:
+                logger.warning("[WebSearch] Serper HTTP %d: %s", resp.status_code, resp.text[:200])
+                return []
+            images = resp.json().get("images") or []
+            urls = [it["imageUrl"] for it in images if it.get("imageUrl")]
+            return urls[:max_results]
+    except Exception as e:
+        logger.warning("[WebSearch] Serper failed: %s", e)
+        return []
 
 
 def _search_images_google(query: str, max_results: int = 10) -> List[str]:
